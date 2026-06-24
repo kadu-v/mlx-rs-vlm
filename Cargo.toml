@@ -2,13 +2,18 @@
 name = "mlx-rs-vlm"
 version = "0.1.0"
 edition = "2024"
+description = "Qwen 3.5 VLM inference on Apple Silicon using mlx-rs"
+license = "MIT"
+repository = "https://github.com/kadu-v/mlx-rs-vlm"
 
 [dependencies]
 mlx-rs = { git = "https://github.com/kadu-v/mlx-rs", tag = "v0.25.3-ios" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-tokenizers = "0.21"
 safetensors = "0.5"
 anyhow = "1"
 hf-hub = { version = "1.0.0-rc.1", features = ["blocking"] }
+
+[dev-dependencies]
+tokenizers = "0.21"
