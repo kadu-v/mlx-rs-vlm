@@ -1,0 +1,261 @@
+use serde::Deserialize;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Qwen35Configuration {
+    pub model_type: String,
+    pub text_config: TextConfiguration,
+    pub vision_config: VisionConfiguration,
+    #[serde(default = "default_image_token_id")]
+    pub image_token_id: i32,
+    #[serde(default = "default_video_token_id")]
+    pub video_token_id: i32,
+    #[serde(default = "default_vision_start_token_id")]
+    pub vision_start_token_id: i32,
+    #[serde(default = "default_vision_end_token_id")]
+    pub vision_end_token_id: i32,
+    pub eos_token_id: Option<Vec<i32>>,
+    #[serde(default)]
+    pub tie_word_embeddings: bool,
+    #[serde(default)]
+    pub image_token_index: Option<i32>,
+    #[serde(default)]
+    pub video_token_index: Option<i32>,
+    pub quantization: Option<QuantizationConfig>,
+}
+
+impl Qwen35Configuration {
+    pub fn image_token_index(&self) -> i32 {
+        self.image_token_index.unwrap_or(self.image_token_id)
+    }
+    pub fn video_token_index(&self) -> i32 {
+        self.video_token_index.unwrap_or(self.video_token_id)
+    }
+}
+
+fn default_image_token_id() -> i32 { 248056 }
+fn default_video_token_id() -> i32 { 248057 }
+fn default_vision_start_token_id() -> i32 { 248045 }
+fn default_vision_end_token_id() -> i32 { 248046 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TextConfiguration {
+    #[serde(default = "default_hidden_size")]
+    pub hidden_size: i32,
+    #[serde(default = "default_num_hidden_layers")]
+    pub num_hidden_layers: i32,
+    #[serde(default = "default_num_attention_heads")]
+    pub num_attention_heads: i32,
+    #[serde(default = "default_num_key_value_heads")]
+    pub num_key_value_heads: i32,
+    #[serde(default = "default_intermediate_size")]
+    pub intermediate_size: i32,
+    #[serde(default = "default_vocab_size")]
+    pub vocab_size: i32,
+    pub head_dim: Option<i32>,
+    #[serde(default = "default_rms_norm_eps")]
+    pub rms_norm_eps: f32,
+    #[serde(default = "default_partial_rotary_factor")]
+    pub partial_rotary_factor: f32,
+    #[serde(default = "default_max_position_embeddings")]
+    pub max_position_embeddings: i32,
+    #[serde(default)]
+    pub tie_word_embeddings: bool,
+    #[serde(default)]
+    pub attention_bias: bool,
+    #[serde(default = "default_full_attention_interval")]
+    pub full_attention_interval: i32,
+    pub rope_parameters: Option<RopeParameters>,
+    pub layer_types: Option<Vec<String>>,
+    #[serde(default = "default_linear_conv_kernel_dim")]
+    pub linear_conv_kernel_dim: i32,
+    #[serde(default = "default_linear_key_head_dim")]
+    pub linear_key_head_dim: i32,
+    #[serde(default = "default_linear_value_head_dim")]
+    pub linear_value_head_dim: i32,
+    #[serde(default = "default_linear_num_key_heads")]
+    pub linear_num_key_heads: i32,
+    #[serde(default = "default_linear_num_value_heads")]
+    pub linear_num_value_heads: i32,
+    #[serde(default)]
+    pub num_experts: Option<i32>,
+}
+
+fn default_hidden_size() -> i32 { 2048 }
+fn default_num_hidden_layers() -> i32 { 24 }
+fn default_num_attention_heads() -> i32 { 8 }
+fn default_num_key_value_heads() -> i32 { 2 }
+fn default_intermediate_size() -> i32 { 6144 }
+fn default_vocab_size() -> i32 { 248320 }
+fn default_rms_norm_eps() -> f32 { 1e-6 }
+fn default_partial_rotary_factor() -> f32 { 0.25 }
+fn default_max_position_embeddings() -> i32 { 131072 }
+fn default_full_attention_interval() -> i32 { 4 }
+fn default_linear_conv_kernel_dim() -> i32 { 4 }
+fn default_linear_key_head_dim() -> i32 { 128 }
+fn default_linear_value_head_dim() -> i32 { 128 }
+fn default_linear_num_key_heads() -> i32 { 16 }
+fn default_linear_num_value_heads() -> i32 { 16 }
+
+impl TextConfiguration {
+    pub fn head_dim(&self) -> i32 {
+        self.head_dim.unwrap_or(self.hidden_size / self.num_attention_heads)
+    }
+
+    pub fn mrope_section(&self) -> [i32; 3] {
+        self.rope_parameters
+            .as_ref()
+            .and_then(|rp| rp.mrope_section.as_ref())
+            .map(|s| [s[0], s[1], s[2]])
+            .unwrap_or([11, 11, 10])
+    }
+
+    pub fn rope_theta(&self) -> f32 {
+        self.rope_parameters
+            .as_ref()
+            .and_then(|rp| rp.rope_theta)
+            .unwrap_or(100_000.0)
+    }
+
+    pub fn is_linear_layer(&self, layer_idx: i32) -> bool {
+        if let Some(ref layer_types) = self.layer_types {
+            if let Some(lt) = layer_types.get(layer_idx as usize) {
+                return lt == "linear_attention";
+            }
+        }
+        (layer_idx + 1) % self.full_attention_interval != 0
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RopeParameters {
+    #[serde(default)]
+    pub mrope_interleaved: bool,
+    pub mrope_section: Option<Vec<i32>>,
+    pub partial_rotary_factor: Option<f32>,
+    pub rope_theta: Option<f32>,
+    pub rope_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VisionConfiguration {
+    #[serde(default = "default_vision_depth")]
+    pub depth: i32,
+    #[serde(default = "default_vision_hidden_size")]
+    pub hidden_size: i32,
+    #[serde(default = "default_vision_num_heads")]
+    pub num_heads: i32,
+    #[serde(default = "default_vision_intermediate_size")]
+    pub intermediate_size: i32,
+    #[serde(default = "default_vision_patch_size")]
+    pub patch_size: i32,
+    #[serde(default = "default_vision_in_channels")]
+    pub in_channels: i32,
+    #[serde(default = "default_vision_spatial_merge_size")]
+    pub spatial_merge_size: i32,
+    #[serde(default = "default_vision_temporal_patch_size")]
+    pub temporal_patch_size: i32,
+    #[serde(default = "default_vision_out_hidden_size")]
+    pub out_hidden_size: i32,
+    #[serde(default = "default_vision_num_position_embeddings")]
+    pub num_position_embeddings: i32,
+    pub hidden_act: Option<String>,
+}
+
+fn default_vision_depth() -> i32 { 24 }
+fn default_vision_hidden_size() -> i32 { 1024 }
+fn default_vision_num_heads() -> i32 { 16 }
+fn default_vision_intermediate_size() -> i32 { 4096 }
+fn default_vision_patch_size() -> i32 { 16 }
+fn default_vision_in_channels() -> i32 { 3 }
+fn default_vision_spatial_merge_size() -> i32 { 2 }
+fn default_vision_temporal_patch_size() -> i32 { 2 }
+fn default_vision_out_hidden_size() -> i32 { 2048 }
+fn default_vision_num_position_embeddings() -> i32 { 2304 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct QuantizationConfig {
+    pub group_size: i32,
+    pub bits: i32,
+    #[serde(default = "default_quant_mode")]
+    pub mode: String,
+}
+
+fn default_quant_mode() -> String { "affine".to_string() }
+
+#[derive(Debug, Clone, Copy)]
+pub struct THW {
+    pub t: i32,
+    pub h: i32,
+    pub w: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProcessorConfig {
+    #[serde(default = "default_image_mean")]
+    pub image_mean: Vec<f32>,
+    #[serde(default = "default_image_std")]
+    pub image_std: Vec<f32>,
+    #[serde(default = "default_min_pixels")]
+    pub min_pixels: u32,
+    #[serde(default = "default_max_pixels")]
+    pub max_pixels: u32,
+}
+
+fn default_image_mean() -> Vec<f32> { vec![0.5, 0.5, 0.5] }
+fn default_image_std() -> Vec<f32> { vec![0.5, 0.5, 0.5] }
+fn default_min_pixels() -> u32 { 4 * 28 * 28 }
+fn default_max_pixels() -> u32 { 16384 * 28 * 28 }
+
+impl Default for ProcessorConfig {
+    fn default() -> Self {
+        Self {
+            image_mean: default_image_mean(),
+            image_std: default_image_std(),
+            min_pixels: default_min_pixels(),
+            max_pixels: default_max_pixels(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deserialize_config() {
+        let json = std::fs::read_to_string(
+            "models/say2_q35_2B_mlx_8bit_20260522/config.json"
+        ).unwrap();
+        let config: Qwen35Configuration = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(config.model_type, "qwen3_5");
+        assert_eq!(config.text_config.hidden_size, 2048);
+        assert_eq!(config.text_config.num_hidden_layers, 24);
+        assert_eq!(config.text_config.num_attention_heads, 8);
+        assert_eq!(config.text_config.num_key_value_heads, 2);
+        assert_eq!(config.text_config.head_dim(), 256);
+        assert_eq!(config.text_config.intermediate_size, 6144);
+        assert_eq!(config.text_config.vocab_size, 248320);
+        assert_eq!(config.text_config.partial_rotary_factor, 0.25);
+        assert_eq!(config.text_config.full_attention_interval, 4);
+        assert_eq!(config.text_config.mrope_section(), [11, 11, 10]);
+        assert_eq!(config.text_config.rope_theta(), 10_000_000.0);
+        assert!(config.text_config.tie_word_embeddings);
+        assert!(config.text_config.is_linear_layer(0));
+        assert!(!config.text_config.is_linear_layer(3));
+
+        assert_eq!(config.vision_config.depth, 24);
+        assert_eq!(config.vision_config.hidden_size, 1024);
+        assert_eq!(config.vision_config.num_heads, 16);
+        assert_eq!(config.vision_config.patch_size, 16);
+        assert_eq!(config.vision_config.spatial_merge_size, 2);
+        assert_eq!(config.vision_config.out_hidden_size, 2048);
+
+        assert_eq!(config.image_token_id, 248056);
+        assert_eq!(config.video_token_id, 248057);
+        assert!(config.quantization.is_some());
+        let q = config.quantization.unwrap();
+        assert_eq!(q.bits, 8);
+        assert_eq!(q.group_size, 64);
+    }
+}
