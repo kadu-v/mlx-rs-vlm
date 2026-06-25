@@ -1,49 +1,54 @@
 pub mod attention;
 pub mod decoder;
 pub mod gated_delta_net;
+pub mod linear_like;
 pub mod mlp;
 pub mod rope;
 
 use mlx_rs::Array;
-use mlx_rs::builder::Builder;
 use mlx_rs::error::Exception;
 use mlx_rs::macros::ModuleParameters;
 use mlx_rs::module::Module;
-use mlx_rs::nn::{Linear, QuantizedEmbedding, QuantizedEmbeddingBuilder, RmsNorm, RmsNormBuilder};
+use mlx_rs::nn::{RmsNorm, RmsNormBuilder};
+use mlx_rs::builder::Builder;
 
 use crate::cache::{self, Cache, KVCacheSimple, MambaCache};
 use crate::config::TextConfiguration;
+use crate::weights::QuantizationInfo;
 
 use self::decoder::DecoderLayer;
+use self::linear_like::{EmbeddingLike, LinearLike};
 
 #[derive(Debug, ModuleParameters)]
 #[module(root = mlx_rs)]
 pub struct LanguageModel {
     #[param]
-    pub embed_tokens: QuantizedEmbedding,
+    pub embed_tokens: EmbeddingLike,
     #[param]
     pub layers: Vec<DecoderLayer>,
     #[param]
     pub norm: RmsNorm,
     #[param]
-    pub lm_head: Option<Linear>,
+    pub lm_head: Option<LinearLike>,
     pub config: TextConfiguration,
 }
 
 impl LanguageModel {
     pub fn new(
         config: &TextConfiguration,
-        group_size: i32,
-        bits: i32,
+        prefix: &str,
+        quant_info: Option<&QuantizationInfo>,
     ) -> Result<Self, Exception> {
-        let embed_tokens = QuantizedEmbeddingBuilder::new(config.vocab_size, config.hidden_size)
-            .group_size(group_size)
-            .bits(bits)
-            .build()?;
+        let embed_tokens = EmbeddingLike::new(
+            config.vocab_size,
+            config.hidden_size,
+            quant_info.and_then(|qi| qi.for_path(&format!("{prefix}.embed_tokens"))),
+        )?;
 
         let mut layers = Vec::with_capacity(config.num_hidden_layers as usize);
         for i in 0..config.num_hidden_layers {
-            layers.push(DecoderLayer::new(config, i, group_size, bits)?);
+            let layer_prefix = format!("{prefix}.layers.{i}");
+            layers.push(DecoderLayer::new(config, i, &layer_prefix, quant_info)?);
         }
 
         let norm = RmsNormBuilder::new(config.hidden_size)
@@ -51,7 +56,8 @@ impl LanguageModel {
             .build()?;
 
         let lm_head = if !config.tie_word_embeddings {
-            Some(Linear::new(config.hidden_size, config.vocab_size)?)
+            let quant = quant_info.and_then(|qi| qi.for_path(&format!("{prefix}.lm_head")));
+            Some(LinearLike::new(config.hidden_size, config.vocab_size, false, quant)?)
         } else {
             None
         };

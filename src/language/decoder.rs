@@ -7,6 +7,7 @@ use mlx_rs::nn::{RmsNorm, RmsNormBuilder};
 
 use crate::cache::Cache;
 use crate::config::TextConfiguration;
+use crate::weights::QuantizationInfo;
 
 use super::attention::Attention;
 use super::gated_delta_net::GatedDeltaNet;
@@ -32,19 +33,19 @@ impl DecoderLayer {
     pub fn new(
         config: &TextConfiguration,
         layer_idx: i32,
-        group_size: i32,
-        bits: i32,
+        prefix: &str,
+        quant_info: Option<&QuantizationInfo>,
     ) -> Result<Self, Exception> {
         let is_linear = config.is_linear_layer(layer_idx);
 
         let self_attn = if !is_linear {
-            Some(Attention::new(config, group_size, bits)?)
+            Some(Attention::new(config, &format!("{prefix}.self_attn"), quant_info)?)
         } else {
             None
         };
 
         let linear_attn = if is_linear {
-            Some(GatedDeltaNet::new(config, group_size, bits)?)
+            Some(GatedDeltaNet::new(config, &format!("{prefix}.linear_attn"), quant_info)?)
         } else {
             None
         };
@@ -61,7 +62,7 @@ impl DecoderLayer {
                 "MoE (num_experts > 0) is not supported",
             ));
         }
-        let mlp = Mlp::new(config, group_size, bits)?;
+        let mlp = Mlp::new(config, &format!("{prefix}.mlp"), quant_info)?;
 
         Ok(Self {
             is_linear,

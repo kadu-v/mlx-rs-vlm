@@ -12,65 +12,78 @@ pub struct LoadedWeights {
     pub is_mlx_format: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuantizationMode {
+    Affine,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct QuantizationSpec {
+    pub group_size: i32,
+    pub bits: i32,
+    pub mode: QuantizationMode,
+}
+
+#[derive(Debug, Clone)]
+pub struct QuantizationInfo {
+    pub layers: HashMap<String, QuantizationSpec>,
+}
+
+impl QuantizationInfo {
+    pub fn for_path(&self, path: &str) -> Option<QuantizationSpec> {
+        self.layers.get(path).copied()
+    }
+}
+
+#[derive(Debug)]
+pub struct SanitizeResult {
+    pub weights: HashMap<String, Array>,
+    pub quant_info: Option<QuantizationInfo>,
+}
+
+fn collect_safetensors(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir)
+        .with_context(|| format!("Failed to read directory {}", dir.display()))?
+    {
+        let path = entry?.path();
+        if path.is_dir() {
+            files.extend(collect_safetensors(&path)?);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("safetensors") {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
+
 pub fn load_weights(model_dir: &Path) -> Result<LoadedWeights> {
-    let index_path = model_dir.join("model.safetensors.index.json");
+    let mut safetensor_files = collect_safetensors(model_dir)?;
+    safetensor_files.sort();
+
+    if safetensor_files.is_empty() {
+        anyhow::bail!("No .safetensors files found in {}", model_dir.display());
+    }
+
     let mut all_weights = HashMap::new();
     let mut is_mlx_format = false;
 
-    if index_path.exists() {
-        let index_str = std::fs::read_to_string(&index_path)
-            .context("Failed to read model.safetensors.index.json")?;
-        let index: serde_json::Value = serde_json::from_str(&index_str)?;
+    for file_path in &safetensor_files {
+        let data = std::fs::read(file_path)
+            .with_context(|| format!("Failed to read {}", file_path.display()))?;
+        let tensors = SafeTensors::deserialize(&data)
+            .with_context(|| format!("Failed to parse {}", file_path.display()))?;
 
-        let weight_map = index["weight_map"]
-            .as_object()
-            .context("Missing weight_map in index")?;
-
-        let mut files: Vec<String> = weight_map
-            .values()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect();
-        files.sort();
-        files.dedup();
-
-        for file in &files {
-            let file_path = model_dir.join(file);
-            let data = std::fs::read(&file_path)
-                .with_context(|| format!("Failed to read {}", file_path.display()))?;
-            let tensors = SafeTensors::deserialize(&data)
-                .with_context(|| format!("Failed to parse {}", file))?;
-
-            if !is_mlx_format {
-                let (_, raw_meta) = SafeTensors::read_metadata(&data)
-                    .with_context(|| format!("Failed to read metadata from {}", file))?;
-                if let Some(meta) = raw_meta.metadata() {
-                    if meta.get("format").map(|f| f.eq_ignore_ascii_case("mlx")) == Some(true) {
-                        is_mlx_format = true;
-                    }
+        // Swift reads metadata only from the first safetensor file.
+        // We check all files for robustness — any file with format=mlx sets the flag.
+        if !is_mlx_format {
+            let (_, raw_meta) = SafeTensors::read_metadata(&data)
+                .with_context(|| {
+                    format!("Failed to read metadata from {}", file_path.display())
+                })?;
+            if let Some(meta) = raw_meta.metadata() {
+                if meta.get("format").map(|f| f.eq_ignore_ascii_case("mlx")) == Some(true) {
+                    is_mlx_format = true;
                 }
-            }
-
-            for (name, tensor_view) in tensors.tensors() {
-                let shape: Vec<i32> = tensor_view.shape().iter().map(|&s| s as i32).collect();
-                let data = tensor_view.data();
-                let dtype = safetensors_dtype_to_mlx(tensor_view.dtype())?;
-                let array = unsafe {
-                    Array::from_raw_data(data.as_ptr() as *const std::ffi::c_void, &shape, dtype)
-                };
-                all_weights.insert(name.to_string(), array);
-            }
-        }
-    } else {
-        let single_path = model_dir.join("model.safetensors");
-        let data = std::fs::read(&single_path)
-            .context("Failed to read model.safetensors")?;
-        let tensors = SafeTensors::deserialize(&data)?;
-
-        let (_, raw_meta) = SafeTensors::read_metadata(&data)
-            .context("Failed to read safetensors metadata")?;
-        if let Some(meta) = raw_meta.metadata() {
-            if meta.get("format").map(|f| f.eq_ignore_ascii_case("mlx")) == Some(true) {
-                is_mlx_format = true;
             }
         }
 
@@ -110,19 +123,160 @@ fn safetensors_dtype_to_mlx(dtype: safetensors::Dtype) -> Result<mlx_rs::Dtype> 
 
 /// Sanitize and remap weight keys to match our module parameter hierarchy.
 ///
-/// Remapping:
-/// - `language_model.model.X` → `language_model.X` (strip extra `.model.`)
-/// - `A_log` → `a_log` (case fix)
-/// - conv1d.weight: reorder axes [D_out, 1, K] → [D_out, K, 1]
-/// - q_norm/k_norm weights: +1.0
-/// - Quantized layers: `.weight` → `.inner.weight` (detected by `.scales` sibling)
-/// - mtp.* excluded
-/// - tie_word_embeddings: lm_head excluded
+/// Combines two stages:
+/// 1. `sanitize_hf_to_mlx`: HF→MLX value transforms (skip for MLX format)
+/// 2. `adapt_keys_to_rust`: Rust module path adaptation (always runs)
 pub fn sanitize_weights(
     weights: HashMap<String, Array>,
     config: &Qwen35Configuration,
     is_mlx_format: bool,
-) -> HashMap<String, Array> {
+) -> Result<SanitizeResult> {
+    let (intermediate, all_scales_prefixes) =
+        adapt_keys_to_rust(weights, config, is_mlx_format)?;
+
+    let (adapted, quant_info) = if !all_scales_prefixes.is_empty() {
+        let q = config.quantization_params().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Weights contain {} quantized layers (.scales) but config has no quantization settings",
+                all_scales_prefixes.len()
+            )
+        })?;
+        if q.mode != "affine" {
+            anyhow::bail!(
+                "Unsupported quantization mode '{}': only 'affine' is supported",
+                q.mode
+            );
+        }
+
+        let normalized_per_layer: HashMap<String, &serde_json::Value> = q
+            .per_layer
+            .iter()
+            .filter(|(k, _)| !crate::config::KNOWN_QUANT_KEYS.contains(&k.as_str()))
+            .map(|(k, v)| (rename_weight_key(k), v))
+            .collect();
+
+        let default_spec = QuantizationSpec {
+            group_size: q.group_size,
+            bits: q.bits,
+            mode: QuantizationMode::Affine,
+        };
+
+        let mut layers = HashMap::new();
+        for p in &all_scales_prefixes {
+            match normalized_per_layer.get(p) {
+                Some(serde_json::Value::Bool(false)) => {
+                    anyhow::bail!(
+                        "Layer '{}' is marked as skip in quantization config but has .scales in weights",
+                        p
+                    );
+                }
+                Some(serde_json::Value::Object(obj)) => {
+                    let mode = obj.get("mode").and_then(|v| v.as_str()).unwrap_or("affine");
+                    if mode != "affine" {
+                        anyhow::bail!(
+                            "Unsupported quantization mode '{}' for layer '{}': only 'affine' is supported",
+                            mode, p
+                        );
+                    }
+                    let gs = obj.get("group_size").and_then(|v| v.as_i64())
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "Per-layer quantization for '{}' is missing 'group_size'", p
+                        ))? as i32;
+                    let bits = obj.get("bits").and_then(|v| v.as_i64())
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "Per-layer quantization for '{}' is missing 'bits'", p
+                        ))? as i32;
+                    layers.insert(p.clone(), QuantizationSpec { group_size: gs, bits, mode: QuantizationMode::Affine });
+                }
+                None | Some(serde_json::Value::Bool(true)) => {
+                    layers.insert(p.clone(), default_spec);
+                }
+                Some(other) => {
+                    anyhow::bail!(
+                        "Invalid per-layer quantization value for '{}': expected object or false, got {}",
+                        p, value_type_name(other)
+                    );
+                }
+            }
+        }
+
+        let effective_prefixes: Vec<String> = layers.keys().cloned().collect();
+        let adapted = remap_quantized_keys(intermediate, &effective_prefixes);
+        let qi = if layers.is_empty() { None } else { Some(QuantizationInfo { layers }) };
+        (adapted, qi)
+    } else {
+        (intermediate, None)
+    };
+
+    let adapted = sanitize_vision_weights(adapted, config.vision_config.in_channels)?;
+
+    Ok(SanitizeResult {
+        weights: adapted,
+        quant_info,
+    })
+}
+
+/// Vision weight sanitize: remove position_ids, transpose patch_embed.proj.weight.
+/// Corresponds to Swift's `visionModel.sanitize(weights:)`.
+fn sanitize_vision_weights(
+    weights: HashMap<String, Array>,
+    in_channels: i32,
+) -> Result<HashMap<String, Array>> {
+    let mut result = HashMap::with_capacity(weights.len());
+    for (key, value) in weights {
+        if key.contains("position_ids") {
+            continue;
+        } else if key.contains("patch_embed.proj.weight") {
+            if value.ndim() == 5 && value.dim(-1) == in_channels {
+                result.insert(key, value);
+            } else if value.ndim() == 5 {
+                let transposed = value.transpose_axes(&[0, 2, 3, 4, 1])
+                    .with_context(|| format!("Failed to transpose '{key}'"))?;
+                result.insert(key, transposed);
+            } else {
+                anyhow::bail!(
+                    "Unexpected shape for '{}': expected 5D tensor, got {}D",
+                    key, value.ndim()
+                );
+            }
+        } else {
+            result.insert(key, value);
+        }
+    }
+    Ok(result)
+}
+
+/// HF→MLX value transforms. Corresponds to Swift's `sanitize(weights:)`.
+/// Only called when `!is_mlx_format`.
+fn sanitize_hf_to_mlx(key: &str, mut value: Array, norm_keys: &[&str]) -> Result<Array> {
+    if key.contains("conv1d.weight") && value.ndim() == 3 {
+        let last_dim = value.shape()[2];
+        if last_dim != 1 {
+            value = value
+                .move_axis(2, 1)
+                .with_context(|| format!("Failed to reorder conv1d weight axes for '{key}'"))?;
+        }
+    }
+
+    if (norm_keys.iter().any(|nk| key.ends_with(nk)) || key == "language_model.norm.weight")
+        && value.ndim() == 1
+    {
+        value = value
+            .add(&Array::from(1.0f32))
+            .with_context(|| format!("Failed to apply norm +1.0 adjustment for '{key}'"))?;
+    }
+
+    Ok(value)
+}
+
+/// Rust module path adaptation. No Swift counterpart — Rust-specific.
+/// Handles key rename, mtp filter, lm_head drop, A_log fix.
+/// Returns intermediate weights (before .inner remap) and all prefixes that have .scales.
+fn adapt_keys_to_rust(
+    weights: HashMap<String, Array>,
+    config: &Qwen35Configuration,
+    is_mlx_format: bool,
+) -> Result<(HashMap<String, Array>, Vec<String>)> {
     let norm_keys = [
         "q_norm.weight",
         "k_norm.weight",
@@ -130,7 +284,6 @@ pub fn sanitize_weights(
         "post_attention_layernorm.weight",
     ];
 
-    // First pass: collect all keys, apply basic renames, norms, conv fixes
     let mut intermediate = HashMap::new();
     for (key, mut value) in weights {
         if key.starts_with("mtp.") {
@@ -146,44 +299,33 @@ pub fn sanitize_weights(
         }
 
         let mut key = rename_weight_key(&key);
-
-        // Fix A_log casing
         key = key.replace(".A_log", ".a_log");
 
         if !is_mlx_format {
-            // Conv1d weight axis reorder (HF [D,1,K] → MLX [D,K,1])
-            if key.contains("conv1d.weight") && value.ndim() == 3 {
-                let last_dim = value.shape()[2];
-                if last_dim != 1 {
-                    value = value.move_axis(2, 1).unwrap_or(value);
-                }
-            }
-
-            // Norm weight +1.0 adjustment (HF stores deviation from 1)
-            if (norm_keys.iter().any(|nk| key.ends_with(nk))
-                || key == "language_model.norm.weight")
-                && value.ndim() == 1
-            {
-                value = value.add(&Array::from(1.0f32)).unwrap_or(value);
-            }
+            value = sanitize_hf_to_mlx(&key, value, &norm_keys)?;
         }
 
         intermediate.insert(key, value);
     }
 
-    // Second pass: add `inner.` prefix for quantized layer weights
-    // A weight key belongs to a quantized layer if a corresponding `.scales` key exists
     let quantized_prefixes: Vec<String> = intermediate
         .keys()
         .filter(|k| k.ends_with(".scales"))
         .map(|k| k.strip_suffix(".scales").unwrap().to_string())
         .collect();
 
+    Ok((intermediate, quantized_prefixes))
+}
+
+fn remap_quantized_keys(
+    intermediate: HashMap<String, Array>,
+    quantized_prefixes: &[String],
+) -> HashMap<String, Array> {
     let mut result = HashMap::new();
     for (key, value) in intermediate {
         let mut new_key = key.clone();
 
-        for prefix in &quantized_prefixes {
+        for prefix in quantized_prefixes {
             if key == format!("{}.weight", prefix) {
                 new_key = format!("{}.inner.weight", prefix);
                 break;
@@ -196,10 +338,32 @@ pub fn sanitize_weights(
 
         result.insert(new_key, value);
     }
-
     result
 }
 
+fn value_type_name(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "bool",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+/// Remap checkpoint weight keys to Rust module paths.
+///
+/// Swift ↔ Rust path mapping:
+///   language_model.model.*  → language_model.*
+///   model.language_model.*  → language_model.*
+///   model.visual.*          → vision_tower.*
+///   model.* (bare)          → language_model.*
+///   lm_head.*               → language_model.lm_head.*
+///
+/// Swift's LanguageModel has a nested `model: Model` containing layers/norm/embed_tokens.
+/// Rust flattens this: LanguageModel directly holds layers/norm/embed_tokens.
+/// This function absorbs the `.model.` level difference.
 fn rename_weight_key(key: &str) -> String {
     if let Some(rest) = key.strip_prefix("language_model.model.") {
         format!("language_model.{rest}")
@@ -233,7 +397,6 @@ mod tests {
             "language_model.model.layers.0.linear_attn.conv1d.weight".to_string(),
             Array::zeros::<f32>(&[6144, 1, 4]).unwrap(),
         );
-        // Add quantized layer test data
         weights.insert(
             "language_model.model.layers.0.self_attn.q_proj.weight".to_string(),
             Array::zeros::<u32>(&[4096, 512]).unwrap(),
@@ -246,12 +409,10 @@ mod tests {
             "language_model.model.layers.0.self_attn.q_proj.biases".to_string(),
             Array::zeros::<f32>(&[4096, 32]).unwrap(),
         );
-        // A_log test
         weights.insert(
             "language_model.model.layers.0.linear_attn.A_log".to_string(),
             Array::zeros::<f32>(&[16]).unwrap(),
         );
-        // Additional norm weights
         weights.insert(
             "language_model.model.layers.0.input_layernorm.weight".to_string(),
             Array::zeros::<f32>(&[2048]).unwrap(),
@@ -265,12 +426,15 @@ mod tests {
             Array::zeros::<f32>(&[2048]).unwrap(),
         );
 
-        let config: Qwen35Configuration = serde_json::from_str(
-            &std::fs::read_to_string("models/say2_q35_2B_mlx_8bit_20260522/config.json").unwrap(),
-        )
-        .unwrap();
+        let config: Qwen35Configuration = serde_json::from_str(r#"{
+            "model_type": "qwen3_5_vl",
+            "text_config": { "tie_word_embeddings": true },
+            "vision_config": {},
+            "quantization": { "group_size": 64, "bits": 8 }
+        }"#).unwrap();
 
-        let sanitized = sanitize_weights(weights, &config, false);
+        let result = sanitize_weights(weights, &config, false).unwrap();
+        let sanitized = &result.weights;
 
         assert!(!sanitized.contains_key("mtp.layer.weight"));
 
@@ -286,33 +450,380 @@ mod tests {
         assert_eq!(conv_w.shape()[1], 4);
         assert_eq!(conv_w.shape()[2], 1);
 
-        // Check quantized key remapping
         assert!(sanitized.contains_key("language_model.layers.0.self_attn.q_proj.inner.weight"));
         assert!(sanitized.contains_key("language_model.layers.0.self_attn.q_proj.scales"));
         assert!(sanitized.contains_key("language_model.layers.0.self_attn.q_proj.biases"));
 
-        // Check A_log → a_log
         assert!(sanitized.contains_key("language_model.layers.0.linear_attn.a_log"));
 
-        // Check input_layernorm +1.0
         let ln_w = sanitized
             .get("language_model.layers.0.input_layernorm.weight")
             .unwrap();
         let ln_mean: f32 = ln_w.mean(None).unwrap().item();
         assert!((ln_mean - 1.0).abs() < 1e-5, "input_layernorm should be +1.0");
 
-        // Check post_attention_layernorm +1.0
         let pln_w = sanitized
             .get("language_model.layers.0.post_attention_layernorm.weight")
             .unwrap();
         let pln_mean: f32 = pln_w.mean(None).unwrap().item();
         assert!((pln_mean - 1.0).abs() < 1e-5, "post_attention_layernorm should be +1.0");
 
-        // Check language_model.norm.weight +1.0
-        let final_norm = sanitized
-            .get("language_model.norm.weight")
-            .unwrap();
+        let final_norm = sanitized.get("language_model.norm.weight").unwrap();
         let fn_mean: f32 = final_norm.mean(None).unwrap().item();
         assert!((fn_mean - 1.0).abs() < 1e-5, "final norm should be +1.0");
+
+        let qi = result.quant_info.as_ref().unwrap();
+        assert!(qi
+            .layers
+            .contains_key("language_model.layers.0.self_attn.q_proj"));
+        assert_eq!(qi.layers.len(), 1);
+    }
+
+    #[test]
+    fn test_partial_quantization() {
+        let mut weights = HashMap::new();
+
+        weights.insert(
+            "language_model.layers.0.self_attn.q_proj.weight".to_string(),
+            Array::zeros::<u32>(&[4096, 512]).unwrap(),
+        );
+        weights.insert(
+            "language_model.layers.0.self_attn.q_proj.scales".to_string(),
+            Array::zeros::<f32>(&[4096, 32]).unwrap(),
+        );
+        weights.insert(
+            "language_model.layers.0.self_attn.q_proj.biases".to_string(),
+            Array::zeros::<f32>(&[4096, 32]).unwrap(),
+        );
+        weights.insert(
+            "language_model.layers.0.self_attn.k_proj.weight".to_string(),
+            Array::zeros::<f32>(&[512, 2048]).unwrap(),
+        );
+
+        let config: Qwen35Configuration = serde_json::from_str(r#"{
+            "model_type": "qwen3_5_vl",
+            "text_config": { "tie_word_embeddings": true },
+            "vision_config": {},
+            "quantization": { "group_size": 64, "bits": 8 }
+        }"#).unwrap();
+
+        let result = sanitize_weights(weights, &config, true).unwrap();
+        let qi = result.quant_info.as_ref().unwrap();
+
+        assert!(qi
+            .layers
+            .contains_key("language_model.layers.0.self_attn.q_proj"));
+        assert!(!qi
+            .layers
+            .contains_key("language_model.layers.0.self_attn.k_proj"));
+
+        assert!(result
+            .weights
+            .contains_key("language_model.layers.0.self_attn.q_proj.inner.weight"));
+        assert!(result
+            .weights
+            .contains_key("language_model.layers.0.self_attn.k_proj.weight"));
+    }
+
+    #[test]
+    fn test_quantization_config_fallback() {
+        let json = r#"{
+            "model_type": "qwen3_5_vl",
+            "text_config": { "tie_word_embeddings": true },
+            "vision_config": {},
+            "quantization_config": { "group_size": 32, "bits": 4 }
+        }"#;
+        let config: Qwen35Configuration = serde_json::from_str(json).unwrap();
+        assert!(config.quantization.is_none());
+        let params = config.quantization_params().unwrap();
+        assert_eq!(params.group_size, 32);
+        assert_eq!(params.bits, 4);
+        assert_eq!(params.mode, "affine");
+    }
+
+    #[test]
+    fn test_unsupported_quant_mode() {
+        let mut weights = HashMap::new();
+        weights.insert(
+            "language_model.layers.0.self_attn.q_proj.weight".to_string(),
+            Array::zeros::<u32>(&[4096, 512]).unwrap(),
+        );
+        weights.insert(
+            "language_model.layers.0.self_attn.q_proj.scales".to_string(),
+            Array::zeros::<f32>(&[4096, 32]).unwrap(),
+        );
+
+        let json = r#"{
+            "model_type": "qwen3_5_vl",
+            "text_config": { "tie_word_embeddings": true },
+            "vision_config": {},
+            "quantization": { "group_size": 64, "bits": 8, "mode": "symmetric" }
+        }"#;
+        let config: Qwen35Configuration = serde_json::from_str(json).unwrap();
+        let result = sanitize_weights(weights, &config, true);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("symmetric"), "error should mention the mode: {err}");
+    }
+
+    #[test]
+    fn test_per_layer_quantization_skip_with_scales_is_error() {
+        let mut weights = HashMap::new();
+        weights.insert(
+            "model.embed_tokens.weight".to_string(),
+            Array::zeros::<u32>(&[248320, 256]).unwrap(),
+        );
+        weights.insert(
+            "model.embed_tokens.scales".to_string(),
+            Array::zeros::<f32>(&[248320, 16]).unwrap(),
+        );
+        weights.insert(
+            "model.layers.0.self_attn.q_proj.weight".to_string(),
+            Array::zeros::<u32>(&[4096, 512]).unwrap(),
+        );
+        weights.insert(
+            "model.layers.0.self_attn.q_proj.scales".to_string(),
+            Array::zeros::<f32>(&[4096, 32]).unwrap(),
+        );
+
+        let json = r#"{
+            "model_type": "qwen3_5_vl",
+            "text_config": { "tie_word_embeddings": false },
+            "vision_config": {},
+            "quantization": {
+                "group_size": 64,
+                "bits": 8,
+                "model.embed_tokens": false
+            }
+        }"#;
+        let config: Qwen35Configuration = serde_json::from_str(json).unwrap();
+        let result = sanitize_weights(weights, &config, true);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("skip"), "error should mention skip: {err}");
+        assert!(err.contains("embed_tokens"), "error should mention layer: {err}");
+    }
+
+    #[test]
+    fn test_per_layer_quantization_override() {
+        let mut weights = HashMap::new();
+        weights.insert(
+            "model.layers.0.self_attn.q_proj.weight".to_string(),
+            Array::zeros::<u32>(&[4096, 512]).unwrap(),
+        );
+        weights.insert(
+            "model.layers.0.self_attn.q_proj.scales".to_string(),
+            Array::zeros::<f32>(&[4096, 32]).unwrap(),
+        );
+        weights.insert(
+            "model.layers.0.mlp.gate_proj.weight".to_string(),
+            Array::zeros::<u32>(&[6144, 256]).unwrap(),
+        );
+        weights.insert(
+            "model.layers.0.mlp.gate_proj.scales".to_string(),
+            Array::zeros::<f32>(&[6144, 64]).unwrap(),
+        );
+
+        let json = r#"{
+            "model_type": "qwen3_5_vl",
+            "text_config": { "tie_word_embeddings": true },
+            "vision_config": {},
+            "quantization": {
+                "group_size": 64,
+                "bits": 8,
+                "model.layers.0.mlp.gate_proj": { "group_size": 32, "bits": 4 }
+            }
+        }"#;
+        let config: Qwen35Configuration = serde_json::from_str(json).unwrap();
+        let result = sanitize_weights(weights, &config, true).unwrap();
+        let qi = result.quant_info.as_ref().unwrap();
+
+        let q_proj = qi.layers.get("language_model.layers.0.self_attn.q_proj").unwrap();
+        assert_eq!(q_proj.group_size, 64);
+        assert_eq!(q_proj.bits, 8);
+
+        let gate = qi.layers.get("language_model.layers.0.mlp.gate_proj").unwrap();
+        assert_eq!(gate.group_size, 32);
+        assert_eq!(gate.bits, 4);
+    }
+
+    #[test]
+    fn test_per_layer_unsupported_mode() {
+        let mut weights = HashMap::new();
+        weights.insert(
+            "model.layers.0.self_attn.q_proj.weight".to_string(),
+            Array::zeros::<u32>(&[4096, 512]).unwrap(),
+        );
+        weights.insert(
+            "model.layers.0.self_attn.q_proj.scales".to_string(),
+            Array::zeros::<f32>(&[4096, 32]).unwrap(),
+        );
+
+        let json = r#"{
+            "model_type": "qwen3_5_vl",
+            "text_config": { "tie_word_embeddings": true },
+            "vision_config": {},
+            "quantization": {
+                "group_size": 64,
+                "bits": 8,
+                "model.layers.0.self_attn.q_proj": { "group_size": 32, "bits": 4, "mode": "symmetric" }
+            }
+        }"#;
+        let config: Qwen35Configuration = serde_json::from_str(json).unwrap();
+        let result = sanitize_weights(weights, &config, true);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("symmetric"), "error should mention mode: {err}");
+        assert!(err.contains("q_proj"), "error should mention layer: {err}");
+    }
+
+    #[test]
+    fn test_per_layer_skip_with_scales_is_error() {
+        let mut weights = HashMap::new();
+        weights.insert(
+            "model.embed_tokens.weight".to_string(),
+            Array::zeros::<f32>(&[248320, 2048]).unwrap(),
+        );
+        weights.insert(
+            "model.embed_tokens.scales".to_string(),
+            Array::zeros::<f32>(&[248320, 16]).unwrap(),
+        );
+
+        let json = r#"{
+            "model_type": "qwen3_5_vl",
+            "text_config": { "tie_word_embeddings": false },
+            "vision_config": {},
+            "quantization": {
+                "group_size": 64,
+                "bits": 8,
+                "model.embed_tokens": false
+            }
+        }"#;
+        let config: Qwen35Configuration = serde_json::from_str(json).unwrap();
+        let result = sanitize_weights(weights, &config, true);
+        assert!(result.is_err(), "skip + .scales should be an error");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("skip"), "error should mention skip: {err}");
+    }
+
+    #[test]
+    fn test_per_layer_missing_fields() {
+        let mut weights = HashMap::new();
+        weights.insert(
+            "model.layers.0.self_attn.q_proj.weight".to_string(),
+            Array::zeros::<u32>(&[4096, 512]).unwrap(),
+        );
+        weights.insert(
+            "model.layers.0.self_attn.q_proj.scales".to_string(),
+            Array::zeros::<f32>(&[4096, 32]).unwrap(),
+        );
+
+        // missing bits
+        let json = r#"{
+            "model_type": "qwen3_5_vl",
+            "text_config": { "tie_word_embeddings": true },
+            "vision_config": {},
+            "quantization": {
+                "group_size": 64,
+                "bits": 8,
+                "model.layers.0.self_attn.q_proj": { "group_size": 32 }
+            }
+        }"#;
+        let config: Qwen35Configuration = serde_json::from_str(json).unwrap();
+        let result = sanitize_weights(weights.clone(), &config, true);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("bits"), "error should mention missing field: {err}");
+
+        // missing group_size
+        let json2 = r#"{
+            "model_type": "qwen3_5_vl",
+            "text_config": { "tie_word_embeddings": true },
+            "vision_config": {},
+            "quantization": {
+                "group_size": 64,
+                "bits": 8,
+                "model.layers.0.self_attn.q_proj": { "bits": 4 }
+            }
+        }"#;
+        let config2: Qwen35Configuration = serde_json::from_str(json2).unwrap();
+        let result2 = sanitize_weights(weights, &config2, true);
+        assert!(result2.is_err());
+        let err2 = result2.unwrap_err().to_string();
+        assert!(err2.contains("group_size"), "error should mention missing field: {err2}");
+    }
+
+    #[test]
+    fn test_per_layer_invalid_type() {
+        let mut weights = HashMap::new();
+        weights.insert(
+            "model.layers.0.self_attn.q_proj.weight".to_string(),
+            Array::zeros::<u32>(&[4096, 512]).unwrap(),
+        );
+        weights.insert(
+            "model.layers.0.self_attn.q_proj.scales".to_string(),
+            Array::zeros::<f32>(&[4096, 32]).unwrap(),
+        );
+
+        let json = r#"{
+            "model_type": "qwen3_5_vl",
+            "text_config": { "tie_word_embeddings": true },
+            "vision_config": {},
+            "quantization": {
+                "group_size": 64,
+                "bits": 8,
+                "model.layers.0.self_attn.q_proj": "keep"
+            }
+        }"#;
+        let config: Qwen35Configuration = serde_json::from_str(json).unwrap();
+        let result = sanitize_weights(weights, &config, true);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("string"), "error should mention the invalid type: {err}");
+    }
+
+    #[test]
+    fn test_vision_sanitize_removes_position_ids() {
+        let mut weights = HashMap::new();
+        weights.insert("vision_tower.blocks.0.attn.qkv.weight".to_string(), Array::zeros::<f32>(&[3072, 1024]).unwrap());
+        weights.insert("vision_tower.position_ids".to_string(), Array::zeros::<i32>(&[1, 256]).unwrap());
+        weights.insert("vision_tower.blocks.0.position_ids".to_string(), Array::zeros::<i32>(&[1, 64]).unwrap());
+
+        let result = sanitize_vision_weights(weights, 3).unwrap();
+        assert!(result.contains_key("vision_tower.blocks.0.attn.qkv.weight"));
+        assert!(!result.keys().any(|k| k.contains("position_ids")));
+    }
+
+    #[test]
+    fn test_vision_sanitize_transposes_patch_embed() {
+        // PyTorch format: [out, in, D, H, W] — needs transpose
+        let weights_pytorch = HashMap::from([(
+            "vision_tower.patch_embed.proj.weight".to_string(),
+            Array::zeros::<f32>(&[1024, 3, 2, 16, 16]).unwrap(),
+        )]);
+        let result = sanitize_vision_weights(weights_pytorch, 3).unwrap();
+        let w = result.get("vision_tower.patch_embed.proj.weight").unwrap();
+        assert_eq!(w.shape(), &[1024, 2, 16, 16, 3]);
+
+        // Already channels-last: [out, D, H, W, in] — no transpose
+        let weights_mlx = HashMap::from([(
+            "vision_tower.patch_embed.proj.weight".to_string(),
+            Array::zeros::<f32>(&[1024, 2, 16, 16, 3]).unwrap(),
+        )]);
+        let result = sanitize_vision_weights(weights_mlx, 3).unwrap();
+        let w = result.get("vision_tower.patch_embed.proj.weight").unwrap();
+        assert_eq!(w.shape(), &[1024, 2, 16, 16, 3]);
+    }
+
+    #[test]
+    fn test_vision_sanitize_unexpected_ndim() {
+        let weights = HashMap::from([(
+            "vision_tower.patch_embed.proj.weight".to_string(),
+            Array::zeros::<f32>(&[1024, 3, 16, 16]).unwrap(),
+        )]);
+        let result = sanitize_vision_weights(weights, 3);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("4D"), "error should mention ndim: {err}");
     }
 }

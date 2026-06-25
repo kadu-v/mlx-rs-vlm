@@ -15,8 +15,7 @@ impl GenerateParams {
     pub fn with_config(config: &Qwen35Configuration) -> Self {
         Self {
             eos_token_ids: config
-                .eos_token_id
-                .clone()
+                .eos_token_ids()
                 .unwrap_or_else(|| vec![248046, 248044]),
             ..Default::default()
         }

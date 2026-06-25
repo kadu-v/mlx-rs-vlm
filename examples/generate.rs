@@ -25,20 +25,20 @@ fn main() -> Result<()> {
 
     println!("Loading weights...");
     let loaded = load_weights(model_path)?;
-    let weights = sanitize_weights(loaded.weights, &config, loaded.is_mlx_format);
+    let result = sanitize_weights(loaded.weights, &config, loaded.is_mlx_format)?;
     println!(
         "Loaded {} weight tensors (mlx_format={})",
-        weights.len(),
+        result.weights.len(),
         loaded.is_mlx_format
     );
 
     println!("Building model...");
-    let mut model =
-        Qwen35VLM::new(&config).map_err(|e| anyhow::anyhow!("Failed to build model: {}", e))?;
+    let mut model = Qwen35VLM::new(&config, result.quant_info.as_ref())
+        .map_err(|e| anyhow::anyhow!("Failed to build model: {}", e))?;
 
     println!("Loading weights into model...");
     model
-        .load_weights(weights)
+        .load_weights(result.weights)
         .map_err(|e| anyhow::anyhow!("Failed to load weights: {}", e))?;
     println!("Weights loaded successfully");
 

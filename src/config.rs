@@ -1,4 +1,22 @@
+use std::collections::HashMap;
+
 use serde::Deserialize;
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum IntOrVec {
+    Vec(Vec<i32>),
+    Int(i32),
+}
+
+impl IntOrVec {
+    fn into_vec(self) -> Vec<i32> {
+        match self {
+            IntOrVec::Vec(v) => v,
+            IntOrVec::Int(i) => vec![i],
+        }
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Qwen35Configuration {
@@ -13,14 +31,20 @@ pub struct Qwen35Configuration {
     pub vision_start_token_id: i32,
     #[serde(default = "default_vision_end_token_id")]
     pub vision_end_token_id: i32,
-    pub eos_token_id: Option<Vec<i32>>,
+    eos_token_id: Option<IntOrVec>,
     #[serde(default)]
     pub tie_word_embeddings: bool,
     #[serde(default)]
     pub image_token_index: Option<i32>,
     #[serde(default)]
     pub video_token_index: Option<i32>,
+    #[serde(default)]
+    pub vocab_size: Option<i32>,
+    #[serde(default = "default_ignore_index")]
+    pub ignore_index: i32,
     pub quantization: Option<QuantizationConfig>,
+    #[serde(default)]
+    pub quantization_config: Option<QuantizationConfig>,
 }
 
 impl Qwen35Configuration {
@@ -30,8 +54,18 @@ impl Qwen35Configuration {
     pub fn video_token_index(&self) -> i32 {
         self.video_token_index.unwrap_or(self.video_token_id)
     }
+    pub fn vocab_size(&self) -> i32 {
+        self.vocab_size.unwrap_or(self.text_config.vocab_size)
+    }
+    pub fn eos_token_ids(&self) -> Option<Vec<i32>> {
+        self.eos_token_id.clone().map(|v| v.into_vec())
+    }
+    pub fn quantization_params(&self) -> Option<&QuantizationConfig> {
+        self.quantization.as_ref().or(self.quantization_config.as_ref())
+    }
 }
 
+fn default_ignore_index() -> i32 { -100 }
 fn default_image_token_id() -> i32 { 248056 }
 fn default_video_token_id() -> i32 { 248057 }
 fn default_vision_start_token_id() -> i32 { 248045 }
@@ -80,21 +114,21 @@ pub struct TextConfiguration {
     pub num_experts: Option<i32>,
 }
 
-fn default_hidden_size() -> i32 { 2048 }
-fn default_num_hidden_layers() -> i32 { 24 }
-fn default_num_attention_heads() -> i32 { 8 }
-fn default_num_key_value_heads() -> i32 { 2 }
-fn default_intermediate_size() -> i32 { 6144 }
+fn default_hidden_size() -> i32 { 4096 }
+fn default_num_hidden_layers() -> i32 { 32 }
+fn default_num_attention_heads() -> i32 { 32 }
+fn default_num_key_value_heads() -> i32 { 8 }
+fn default_intermediate_size() -> i32 { 14336 }
 fn default_vocab_size() -> i32 { 248320 }
 fn default_rms_norm_eps() -> f32 { 1e-6 }
 fn default_partial_rotary_factor() -> f32 { 0.25 }
 fn default_max_position_embeddings() -> i32 { 131072 }
 fn default_full_attention_interval() -> i32 { 4 }
 fn default_linear_conv_kernel_dim() -> i32 { 4 }
-fn default_linear_key_head_dim() -> i32 { 128 }
+fn default_linear_key_head_dim() -> i32 { 192 }
 fn default_linear_value_head_dim() -> i32 { 128 }
 fn default_linear_num_key_heads() -> i32 { 16 }
-fn default_linear_num_value_heads() -> i32 { 16 }
+fn default_linear_num_value_heads() -> i32 { 64 }
 
 impl TextConfiguration {
     pub fn head_dim(&self) -> i32 {
@@ -105,7 +139,7 @@ impl TextConfiguration {
         self.rope_parameters
             .as_ref()
             .and_then(|rp| rp.mrope_section.as_ref())
-            .map(|s| [s[0], s[1], s[2]])
+            .and_then(|s| if s.len() >= 3 { Some([s[0], s[1], s[2]]) } else { None })
             .unwrap_or([11, 11, 10])
     }
 
@@ -178,7 +212,11 @@ pub struct QuantizationConfig {
     pub bits: i32,
     #[serde(default = "default_quant_mode")]
     pub mode: String,
+    #[serde(flatten)]
+    pub per_layer: HashMap<String, serde_json::Value>,
 }
+
+pub const KNOWN_QUANT_KEYS: &[&str] = &["quant_method", "linear_class", "quantization_mode"];
 
 fn default_quant_mode() -> String { "affine".to_string() }
 
@@ -223,10 +261,39 @@ mod tests {
 
     #[test]
     fn test_deserialize_config() {
-        let json = std::fs::read_to_string(
-            "models/say2_q35_2B_mlx_8bit_20260522/config.json"
-        ).unwrap();
-        let config: Qwen35Configuration = serde_json::from_str(&json).unwrap();
+        let json = r#"{
+            "model_type": "qwen3_5",
+            "text_config": {
+                "hidden_size": 2048,
+                "num_hidden_layers": 24,
+                "num_attention_heads": 8,
+                "num_key_value_heads": 2,
+                "intermediate_size": 6144,
+                "vocab_size": 248320,
+                "partial_rotary_factor": 0.25,
+                "full_attention_interval": 4,
+                "tie_word_embeddings": true,
+                "rope_parameters": {
+                    "mrope_section": [11, 11, 10],
+                    "rope_theta": 10000000.0
+                },
+                "layer_types": [
+                    "linear_attention", "linear_attention", "linear_attention", "full_attention"
+                ]
+            },
+            "vision_config": {
+                "depth": 24,
+                "hidden_size": 1024,
+                "num_heads": 16,
+                "patch_size": 16,
+                "spatial_merge_size": 2,
+                "out_hidden_size": 2048
+            },
+            "image_token_id": 248056,
+            "video_token_id": 248057,
+            "quantization": { "group_size": 64, "bits": 8 }
+        }"#;
+        let config: Qwen35Configuration = serde_json::from_str(json).unwrap();
 
         assert_eq!(config.model_type, "qwen3_5");
         assert_eq!(config.text_config.hidden_size, 2048);
@@ -257,5 +324,83 @@ mod tests {
         let q = config.quantization.unwrap();
         assert_eq!(q.bits, 8);
         assert_eq!(q.group_size, 64);
+    }
+
+    #[test]
+    fn test_eos_token_id_single_int() {
+        let json = r#"{
+            "model_type": "qwen3_5",
+            "text_config": {},
+            "vision_config": {},
+            "eos_token_id": 128001
+        }"#;
+        let config: Qwen35Configuration = serde_json::from_str(json).unwrap();
+        assert_eq!(config.eos_token_ids(), Some(vec![128001]));
+    }
+
+    #[test]
+    fn test_eos_token_id_array() {
+        let json = r#"{
+            "model_type": "qwen3_5",
+            "text_config": {},
+            "vision_config": {},
+            "eos_token_id": [248046, 248044]
+        }"#;
+        let config: Qwen35Configuration = serde_json::from_str(json).unwrap();
+        assert_eq!(config.eos_token_ids(), Some(vec![248046, 248044]));
+    }
+
+    #[test]
+    fn test_eos_token_id_missing() {
+        let json = r#"{
+            "model_type": "qwen3_5",
+            "text_config": {},
+            "vision_config": {}
+        }"#;
+        let config: Qwen35Configuration = serde_json::from_str(json).unwrap();
+        assert_eq!(config.eos_token_ids(), None);
+    }
+
+    #[test]
+    fn test_text_config_defaults() {
+        let json = r#"{
+            "model_type": "qwen3_5",
+            "text_config": {},
+            "vision_config": {}
+        }"#;
+        let config: Qwen35Configuration = serde_json::from_str(json).unwrap();
+        assert_eq!(config.text_config.hidden_size, 4096);
+        assert_eq!(config.text_config.num_hidden_layers, 32);
+        assert_eq!(config.text_config.num_attention_heads, 32);
+        assert_eq!(config.text_config.num_key_value_heads, 8);
+        assert_eq!(config.text_config.intermediate_size, 14336);
+        assert_eq!(config.text_config.linear_key_head_dim, 192);
+        assert_eq!(config.text_config.linear_num_value_heads, 64);
+    }
+
+    #[test]
+    fn test_mrope_section_short_fallback() {
+        let json = r#"{
+            "model_type": "qwen3_5",
+            "text_config": {
+                "rope_parameters": { "mrope_section": [11] }
+            },
+            "vision_config": {}
+        }"#;
+        let config: Qwen35Configuration = serde_json::from_str(json).unwrap();
+        assert_eq!(config.text_config.mrope_section(), [11, 11, 10]);
+    }
+
+    #[test]
+    fn test_mrope_section_empty_fallback() {
+        let json = r#"{
+            "model_type": "qwen3_5",
+            "text_config": {
+                "rope_parameters": { "mrope_section": [] }
+            },
+            "vision_config": {}
+        }"#;
+        let config: Qwen35Configuration = serde_json::from_str(json).unwrap();
+        assert_eq!(config.text_config.mrope_section(), [11, 11, 10]);
     }
 }

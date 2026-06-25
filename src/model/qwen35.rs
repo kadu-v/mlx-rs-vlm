@@ -5,11 +5,13 @@ use mlx_rs::Array;
 use mlx_rs::error::Exception;
 use mlx_rs::macros::ModuleParameters;
 use mlx_rs::module::{Module, ModuleParameters, ModuleParametersExt};
+use mlx_rs::ops::indexing::IndexOp;
 
 use crate::cache::Cache;
 use crate::config::{Qwen35Configuration, THW};
 use crate::language::LanguageModel;
 use crate::vision::VisionModel;
+use crate::weights::QuantizationInfo;
 
 #[derive(Debug, ModuleParameters)]
 #[module(root = mlx_rs)]
@@ -23,16 +25,13 @@ pub struct Qwen35VLM {
 }
 
 impl Qwen35VLM {
-    pub fn new(config: &Qwen35Configuration) -> Result<Self, Exception> {
-        let (group_size, bits) = match &config.quantization {
-            Some(q) => (q.group_size, q.bits),
-            None => {
-                return Err(Exception::custom(
-                    "non-quantized models are not yet supported",
-                ));
-            }
-        };
-        let language_model = LanguageModel::new(&config.text_config, group_size, bits)?;
+    pub fn new(
+        config: &Qwen35Configuration,
+        quant_info: Option<&QuantizationInfo>,
+    ) -> Result<Self, Exception> {
+        let mut text_config = config.text_config.clone();
+        text_config.vocab_size = config.vocab_size();
+        let language_model = LanguageModel::new(&text_config, "language_model", quant_info)?;
         let vision_tower = VisionModel::new(&config.vision_config)?;
 
         Ok(Self {
@@ -47,6 +46,32 @@ impl Qwen35VLM {
         &mut self,
         weights: HashMap<String, Array>,
     ) -> Result<(), Exception> {
+        let model_params = self.parameters().flatten();
+        let model_keys: std::collections::HashSet<&str> =
+            model_params.keys().map(|k| k.as_ref()).collect();
+        let weight_keys: std::collections::HashSet<&str> =
+            weights.keys().map(|k| k.as_str()).collect();
+
+        let mut missing: Vec<_> = model_keys.difference(&weight_keys).copied().collect();
+        let mut extra: Vec<_> = weight_keys.difference(&model_keys).copied().collect();
+        missing.sort();
+        extra.sort();
+
+        if !missing.is_empty() || !extra.is_empty() {
+            let mut msg = format!(
+                "Weight verification failed: {} missing, {} extra keys",
+                missing.len(),
+                extra.len()
+            );
+            if !missing.is_empty() {
+                msg.push_str(&format!("\nMissing: {:?}", &missing[..missing.len().min(10)]));
+            }
+            if !extra.is_empty() {
+                msg.push_str(&format!("\nExtra: {:?}", &extra[..extra.len().min(10)]));
+            }
+            return Err(Exception::custom(msg));
+        }
+
         let remapped: HashMap<Rc<str>, Array> = weights
             .into_iter()
             .map(|(k, v)| (Rc::from(k.as_str()), v))
@@ -60,6 +85,9 @@ impl Qwen35VLM {
         self.language_model.make_cache()
     }
 
+    /// Run a forward pass: embed inputs, apply vision encoder if multimodal, and produce logits.
+    ///
+    /// For multimodal input (pixel_values + grid_thw), only batch_size=1 is supported.
     pub fn prepare(
         &mut self,
         input_ids: &Array,
@@ -73,6 +101,21 @@ impl Qwen35VLM {
             input_ids.clone()
         };
 
+        match (pixel_values.is_some(), grid_thw.is_some()) {
+            (true, false) | (false, true) => {
+                return Err(Exception::custom(
+                    "pixel_values and grid_thw must both be provided or both be None",
+                ));
+            }
+            _ => {}
+        }
+
+        if pixel_values.is_some() && input_ids_2d.dim(0) != 1 {
+            return Err(Exception::custom(
+                "batch > 1 not supported for multimodal input",
+            ));
+        }
+
         let (position_ids, rope_delta) = get_rope_index(
             &input_ids_2d,
             grid_thw,
@@ -84,14 +127,6 @@ impl Qwen35VLM {
             None,
         )?;
         self.rope_deltas = rope_delta;
-
-        if pixel_values.is_some() || grid_thw.is_some() {
-            if input_ids_2d.dim(0) != 1 {
-                return Err(Exception::custom(
-                    "batch > 1 not supported for multimodal input",
-                ));
-            }
-        }
 
         let inputs_embeds = match (pixel_values, grid_thw) {
             (Some(pixels), Some(grids)) => {
@@ -138,19 +173,41 @@ impl Qwen35VLM {
             input_ids.clone()
         };
 
-        let cache_offset = self.get_cache_offset(cache);
-        let delta = self.rope_deltas.first().copied().unwrap_or(0);
-        let pos = cache_offset as i32 + delta;
+        let batch = input_ids_2d.dim(0);
         let seq_len = input_ids_2d.dim(1);
-        let position_ids = if seq_len == 1 {
-            Array::from_slice(&[pos, pos, pos], &[3, 1, 1])
+        let cache_offset = self.get_cache_offset(cache) as i32;
+
+        let deltas = if self.rope_deltas.is_empty() {
+            Array::zeros::<i32>(&[batch])?
         } else {
-            let base = Array::arange::<_, i32>(None, seq_len, None)?;
-            let base = base + Array::from(pos);
-            let base = base.reshape(&[1, seq_len])?;
-            let base = base.expand_dims(0)?;
-            mlx_rs::ops::broadcast_to(&base, &[3, 1, seq_len])?
+            let d = Array::from_slice(
+                &self.rope_deltas,
+                &[self.rope_deltas.len() as i32],
+            );
+            if (self.rope_deltas.len() as i32) < batch {
+                let repeats = (batch + self.rope_deltas.len() as i32 - 1)
+                    / self.rope_deltas.len() as i32;
+                mlx_rs::ops::tile(&d, &[repeats])?
+                    .index(..batch)
+                    .as_dtype(mlx_rs::Dtype::Int32)?
+            } else if (self.rope_deltas.len() as i32) > batch {
+                d.index(..batch).as_dtype(mlx_rs::Dtype::Int32)?
+            } else {
+                d
+            }
         };
+
+        let base = Array::arange::<_, i32>(None, seq_len, None)?;
+        let base = mlx_rs::ops::broadcast_to(
+            &base.reshape(&[1, seq_len])?,
+            &[batch, seq_len],
+        )?;
+        let offset = deltas.add(Array::from(cache_offset))?.reshape(&[batch, 1])?;
+        let positions = base.add(&offset)?;
+        let position_ids = mlx_rs::ops::broadcast_to(
+            &positions.expand_dims(0)?,
+            &[3, batch, seq_len],
+        )?;
 
         self.language_model.forward(
             Some(&input_ids_2d),
@@ -202,6 +259,10 @@ fn merge_input_ids_with_image_features(
     mlx_rs::ops::r#where(&special_expanded, &gathered, input_embeds)
 }
 
+/// Compute 3D M-RoPE position IDs for text and vision tokens.
+///
+/// Returns `(position_ids [3, batch, seq], mrope_position_deltas)`.
+/// For multimodal input, only batch_size=1 is supported.
 pub fn get_rope_index(
     input_ids: &Array,
     image_grid_thw: Option<&[THW]>,
@@ -223,6 +284,12 @@ pub fn get_rope_index(
         let pos_3d = pos.expand_dims(0)?;
         let pos_3d = mlx_rs::ops::broadcast_to(&pos_3d, &[3, batch_size, seq_length])?;
         return Ok((pos_3d, vec![0i32; bs]));
+    }
+
+    if batch_size != 1 {
+        return Err(Exception::custom(
+            "get_rope_index: batch > 1 not supported for multimodal input",
+        ));
     }
 
     let input_tokens: Vec<i32> = {

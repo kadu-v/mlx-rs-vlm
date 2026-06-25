@@ -3,11 +3,14 @@ use mlx_rs::builder::Builder;
 use mlx_rs::error::Exception;
 use mlx_rs::macros::ModuleParameters;
 use mlx_rs::module::{Module, Param};
-use mlx_rs::nn::{Conv1d, Conv1dBuilder, QuantizedLinear, QuantizedLinearBuilder};
+use mlx_rs::nn::{Conv1d, Conv1dBuilder};
 use mlx_rs::ops::indexing::{Ellipsis, IndexOp, NewAxis};
 
 use crate::cache::MambaCache;
 use crate::config::TextConfiguration;
+use crate::weights::QuantizationInfo;
+
+use super::linear_like::LinearLike;
 
 #[derive(Debug, ModuleParameters)]
 #[module(root = mlx_rs)]
@@ -45,13 +48,13 @@ pub struct GatedDeltaNet {
     conv_kernel_size: i32,
 
     #[param]
-    in_proj_qkv: QuantizedLinear,
+    in_proj_qkv: LinearLike,
     #[param]
-    in_proj_z: QuantizedLinear,
+    in_proj_z: LinearLike,
     #[param]
-    in_proj_b: QuantizedLinear,
+    in_proj_b: LinearLike,
     #[param]
-    in_proj_a: QuantizedLinear,
+    in_proj_a: LinearLike,
     #[param]
     conv1d: Conv1d,
     #[param]
@@ -61,11 +64,15 @@ pub struct GatedDeltaNet {
     #[param]
     norm: RmsNormGated,
     #[param]
-    out_proj: QuantizedLinear,
+    out_proj: LinearLike,
 }
 
 impl GatedDeltaNet {
-    pub fn new(config: &TextConfiguration, group_size: i32, bits: i32) -> Result<Self, Exception> {
+    pub fn new(
+        config: &TextConfiguration,
+        prefix: &str,
+        quant_info: Option<&QuantizationInfo>,
+    ) -> Result<Self, Exception> {
         let hidden_size = config.hidden_size;
         let num_v_heads = config.linear_num_value_heads;
         let num_k_heads = config.linear_num_key_heads;
@@ -83,26 +90,10 @@ impl GatedDeltaNet {
             )));
         }
 
-        let in_proj_qkv = QuantizedLinearBuilder::new(hidden_size, conv_dim)
-            .group_size(group_size)
-            .bits(bits)
-            .bias(false)
-            .build()?;
-        let in_proj_z = QuantizedLinearBuilder::new(hidden_size, value_dim)
-            .group_size(group_size)
-            .bits(bits)
-            .bias(false)
-            .build()?;
-        let in_proj_b = QuantizedLinearBuilder::new(hidden_size, num_v_heads)
-            .group_size(group_size)
-            .bits(bits)
-            .bias(false)
-            .build()?;
-        let in_proj_a = QuantizedLinearBuilder::new(hidden_size, num_v_heads)
-            .group_size(group_size)
-            .bits(bits)
-            .bias(false)
-            .build()?;
+        let in_proj_qkv = LinearLike::new(hidden_size, conv_dim, false, quant_info.and_then(|qi| qi.for_path(&format!("{prefix}.in_proj_qkv"))))?;
+        let in_proj_z = LinearLike::new(hidden_size, value_dim, false, quant_info.and_then(|qi| qi.for_path(&format!("{prefix}.in_proj_z"))))?;
+        let in_proj_b = LinearLike::new(hidden_size, num_v_heads, false, quant_info.and_then(|qi| qi.for_path(&format!("{prefix}.in_proj_b"))))?;
+        let in_proj_a = LinearLike::new(hidden_size, num_v_heads, false, quant_info.and_then(|qi| qi.for_path(&format!("{prefix}.in_proj_a"))))?;
 
         let conv1d = Conv1dBuilder::new(conv_dim, conv_dim, conv_kernel_size)
             .groups(conv_dim)
@@ -114,11 +105,7 @@ impl GatedDeltaNet {
         let a_log = mlx_rs::random::uniform::<_, f32>(0.0, 16.0, &[num_v_heads], None)?.log()?;
 
         let norm = RmsNormGated::new(head_v_dim, config.rms_norm_eps)?;
-        let out_proj = QuantizedLinearBuilder::new(value_dim, hidden_size)
-            .group_size(group_size)
-            .bits(bits)
-            .bias(false)
-            .build()?;
+        let out_proj = LinearLike::new(value_dim, hidden_size, false, quant_info.and_then(|qi| qi.for_path(&format!("{prefix}.out_proj"))))?;
 
         Ok(Self {
             num_v_heads,
