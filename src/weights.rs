@@ -3,10 +3,10 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use mlx_rs::Array;
-use safetensors::SafeTensors;
 
 use crate::config::Qwen35Configuration;
 
+#[derive(Debug)]
 pub struct LoadedWeights {
     pub weights: HashMap<String, Array>,
     pub is_mlx_format: bool,
@@ -68,57 +68,26 @@ pub fn load_weights(model_dir: &Path) -> Result<LoadedWeights> {
     let mut is_mlx_format = false;
 
     for file_path in &safetensor_files {
-        let data = std::fs::read(file_path)
-            .with_context(|| format!("Failed to read {}", file_path.display()))?;
-        let tensors = SafeTensors::deserialize(&data)
-            .with_context(|| format!("Failed to parse {}", file_path.display()))?;
+        // MLX ネイティブの遅延ロード (mlx_load_safetensors)。各テンソルは
+        // eval 時にファイルから最終バッファへ直接ストリーム読み込みされる
+        // ため、ファイル全体をヒープへ読み込まずピークメモリが約 1x で済む
+        // (Swift の loadArrays(url:) と同じ経路)。
+        let (weights, metadata) = Array::load_safetensors_with_metadata(file_path)
+            .with_context(|| format!("Failed to load {}", file_path.display()))?;
 
         // Swift reads metadata only from the first safetensor file.
         // We check all files for robustness — any file with format=mlx sets the flag.
-        if !is_mlx_format {
-            let (_, raw_meta) = SafeTensors::read_metadata(&data)
-                .with_context(|| {
-                    format!("Failed to read metadata from {}", file_path.display())
-                })?;
-            if let Some(meta) = raw_meta.metadata() {
-                if meta.get("format").map(|f| f.eq_ignore_ascii_case("mlx")) == Some(true) {
-                    is_mlx_format = true;
-                }
-            }
+        if metadata.get("format").map(|f| f.eq_ignore_ascii_case("mlx")) == Some(true) {
+            is_mlx_format = true;
         }
 
-        for (name, tensor_view) in tensors.tensors() {
-            let shape: Vec<i32> = tensor_view.shape().iter().map(|&s| s as i32).collect();
-            let data = tensor_view.data();
-            let dtype = safetensors_dtype_to_mlx(tensor_view.dtype())?;
-            let array = unsafe {
-                Array::from_raw_data(data.as_ptr() as *const std::ffi::c_void, &shape, dtype)
-            };
-            all_weights.insert(name.to_string(), array);
-        }
+        all_weights.extend(weights);
     }
 
     Ok(LoadedWeights {
         weights: all_weights,
         is_mlx_format,
     })
-}
-
-fn safetensors_dtype_to_mlx(dtype: safetensors::Dtype) -> Result<mlx_rs::Dtype> {
-    match dtype {
-        safetensors::Dtype::F32 => Ok(mlx_rs::Dtype::Float32),
-        safetensors::Dtype::F16 => Ok(mlx_rs::Dtype::Float16),
-        safetensors::Dtype::BF16 => Ok(mlx_rs::Dtype::Bfloat16),
-        safetensors::Dtype::I32 => Ok(mlx_rs::Dtype::Int32),
-        safetensors::Dtype::I64 => Ok(mlx_rs::Dtype::Int64),
-        safetensors::Dtype::I16 => Ok(mlx_rs::Dtype::Int16),
-        safetensors::Dtype::I8 => Ok(mlx_rs::Dtype::Int8),
-        safetensors::Dtype::U8 => Ok(mlx_rs::Dtype::Uint8),
-        safetensors::Dtype::U16 => Ok(mlx_rs::Dtype::Uint16),
-        safetensors::Dtype::U32 => Ok(mlx_rs::Dtype::Uint32),
-        safetensors::Dtype::BOOL => Ok(mlx_rs::Dtype::Bool),
-        other => anyhow::bail!("unsupported safetensors dtype: {:?}", other),
-    }
 }
 
 /// Sanitize and remap weight keys to match our module parameter hierarchy.
@@ -825,5 +794,119 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("4D"), "error should mention ndim: {err}");
+    }
+
+    /// Unique temp dir per test. Removed on drop.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!(
+                "mlx-rs-vlm-test-{}-{}-{}",
+                name,
+                std::process::id(),
+                id
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn save_fixture(
+        path: &Path,
+        arrays: &[(&str, Array)],
+        metadata: Option<&HashMap<String, String>>,
+    ) {
+        let arrays: Vec<(&str, &Array)> = arrays.iter().map(|(k, v)| (*k, v)).collect();
+        Array::save_safetensors(arrays, metadata, path).unwrap();
+    }
+
+    #[test]
+    fn test_load_weights_roundtrip_with_mlx_metadata() {
+        let dir = TempDir::new("mlx-meta");
+        let metadata = HashMap::from([("format".to_string(), "mlx".to_string())]);
+        save_fixture(
+            &dir.path().join("model.safetensors"),
+            &[
+                ("a.weight", Array::from_slice(&[1.0f32, 2.0, 3.0, 4.0], &[2, 2])),
+                ("b.scales", Array::from_slice(&[5i32, 6], &[2])),
+            ],
+            Some(&metadata),
+        );
+
+        let loaded = load_weights(dir.path()).unwrap();
+        assert!(loaded.is_mlx_format);
+        assert_eq!(loaded.weights.len(), 2);
+
+        let a = loaded.weights.get("a.weight").unwrap();
+        assert_eq!(a.shape(), &[2, 2]);
+        assert_eq!(a.dtype(), mlx_rs::Dtype::Float32);
+        assert_eq!(a.as_slice::<f32>(), &[1.0, 2.0, 3.0, 4.0]);
+
+        let b = loaded.weights.get("b.scales").unwrap();
+        assert_eq!(b.dtype(), mlx_rs::Dtype::Int32);
+        assert_eq!(b.as_slice::<i32>(), &[5, 6]);
+    }
+
+    #[test]
+    fn test_load_weights_without_metadata_is_not_mlx_format() {
+        let dir = TempDir::new("no-meta");
+        save_fixture(
+            &dir.path().join("model.safetensors"),
+            &[("a.weight", Array::from_slice(&[1.0f32], &[1]))],
+            None,
+        );
+
+        let loaded = load_weights(dir.path()).unwrap();
+        assert!(!loaded.is_mlx_format);
+        assert_eq!(loaded.weights.len(), 1);
+    }
+
+    #[test]
+    fn test_load_weights_merges_shards_and_any_mlx_flag_wins() {
+        let dir = TempDir::new("shards");
+        // 1 番目のファイルには metadata なし、2 番目に format=mlx。
+        // どのファイルにあってもフラグが立つことを検証する。
+        save_fixture(
+            &dir.path().join("model-00001.safetensors"),
+            &[("a.weight", Array::from_slice(&[1.0f32], &[1]))],
+            None,
+        );
+        let metadata = HashMap::from([("format".to_string(), "MLX".to_string())]);
+        save_fixture(
+            &dir.path().join("model-00002.safetensors"),
+            &[("b.weight", Array::from_slice(&[2.0f32], &[1]))],
+            Some(&metadata),
+        );
+
+        let loaded = load_weights(dir.path()).unwrap();
+        assert!(loaded.is_mlx_format, "format=MLX (case-insensitive) should set the flag");
+        assert_eq!(loaded.weights.len(), 2);
+        assert!(loaded.weights.contains_key("a.weight"));
+        assert!(loaded.weights.contains_key("b.weight"));
+    }
+
+    #[test]
+    fn test_load_weights_empty_dir_is_error() {
+        let dir = TempDir::new("empty");
+        let result = load_weights(dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("No .safetensors"),
+            "error should mention missing files: {err}"
+        );
     }
 }

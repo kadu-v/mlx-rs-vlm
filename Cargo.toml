@@ -14,7 +14,6 @@ image = { version = "0.25", default-features = false, features = [
     "png",
     "jpeg",
 ] }
-safetensors = "0.5"
 anyhow = "1"
 hf-hub = { version = "1.0.0-rc.1", features = ["blocking"] }
 
