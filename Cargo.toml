@@ -7,7 +7,7 @@ license = "MIT"
 repository = "https://github.com/kadu-v/mlx-rs-vlm"
 
 [dependencies]
-mlx-rs = { git = "https://github.com/kadu-v/mlx-rs", tag = "v0.25.3-ios" }
+mlx-rs = { git = "https://github.com/kadu-v/mlx-rs", tag = "v0.25.4-ios" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 image = { version = "0.25", default-features = false, features = [
