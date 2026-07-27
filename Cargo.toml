@@ -28,6 +28,9 @@ tokenizers = { version = "0.21", default-features = false, features = [
 minijinja = { version = "2", features = ["json", "loop_controls"], optional = true }
 minijinja-contrib = { version = "2", features = ["pycompat"], optional = true }
 
+[dev-dependencies]
+clap = { version = "4", features = ["derive"] }
+
 [[example]]
 name = "qwen35"
 required-features = ["hub", "tokenizer"]
