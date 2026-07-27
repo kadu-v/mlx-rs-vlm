@@ -23,3 +23,6 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+
+# Local reference checkout (not part of this crate)
+mlx-swift-lm/
