@@ -6,6 +6,10 @@ description = "Qwen 3.5 VLM inference on Apple Silicon using mlx-rs"
 license = "MIT"
 repository = "https://github.com/kadu-v/mlx-rs-vlm"
 
+[features]
+default = ["hub"]
+hub = ["dep:hf-hub"]
+
 [dependencies]
 mlx-rs = { git = "https://github.com/kadu-v/mlx-rs", tag = "v0.25.3-ios.1" }
 serde = { version = "1", features = ["derive"] }
@@ -15,7 +19,15 @@ image = { version = "0.25", default-features = false, features = [
     "jpeg",
 ] }
 anyhow = "1"
-hf-hub = { version = "1.0.0-rc.1", features = ["blocking"] }
+hf-hub = { version = "1.0.0-rc.1", features = ["blocking"], optional = true }
 
 [dev-dependencies]
 tokenizers = "0.21"
+
+[[example]]
+name = "generate"
+required-features = ["hub"]
+
+[[test]]
+name = "test_qwen35"
+required-features = ["hub"]

@@ -6,4 +6,5 @@ pub mod model;
 pub mod weights;
 pub mod image;
 pub mod generate;
+#[cfg(feature = "hub")]
 pub mod hub;
