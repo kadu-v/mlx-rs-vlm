@@ -4,7 +4,7 @@ use mlx_rs::macros::ModuleParameters;
 use mlx_rs::module::Module;
 use mlx_rs::nn::Linear;
 use mlx_rs::ops::{
-    concatenate_axis, cos, expand_dims, negative, ones, sin, split,
+    concatenate_axis, cos, expand_dims, negative, sin, split,
 };
 use mlx_rs::ops::indexing::IndexOp;
 use mlx_rs::Array;
@@ -48,11 +48,11 @@ fn apply_rotary(tensor: &Array, freqs: &Array) -> Result<Array, Exception> {
     result.as_dtype(tensor.dtype())
 }
 
-/// Vision attention with rotary embeddings and block-diagonal masking.
+/// Vision attention with rotary embeddings and block-diagonal attention.
 ///
-/// Uses a combined QKV projection, applies rotary embeddings,
-/// and uses block-diagonal attention masks derived from cumulative
-/// sequence lengths for variable-length sequences.
+/// Uses a combined QKV projection, applies rotary embeddings, and attends
+/// each image (block defined by cumulative sequence lengths) independently
+/// with the fused SDPA kernel — no dense mask is materialized.
 #[derive(Debug, Clone, ModuleParameters)]
 #[module(root = mlx_rs)]
 pub struct VisionAttention {
@@ -135,24 +135,32 @@ impl VisionAttention {
             .reshape(&[1, seq_len, self.num_heads, self.head_dim])?
             .transpose_axes(&[0, 2, 1, 3])?;
 
-        // Build block-diagonal attention mask from cumulative sequence lengths.
-        // Initialize mask to -1e9 (large negative = masked out)
-        let mask = &ones::<f32>(&[1, seq_len, seq_len])?
-            * &Array::from_f32(-1e9);
-
-        // Read cu_seqlens into a Vec and set block-diagonal entries to 0.
-        // Each block [start..end, start..end] corresponds to one image/video sequence.
-        let mask = build_block_diagonal_mask(mask, cu_seqlens, seq_len)?;
-
-        // Scaled dot-product attention
-        let attended = scaled_dot_product_attention(
-            &queries,
-            &keys,
-            &values,
-            self.scale,
-            ScaledDotProductAttentionMask::Array(&mask),
-            None::<&Array>,
-        )?;
+        // Attention is block-diagonal over the images in cu_seqlens, so each image is
+        // attended independently instead of materializing a dense [L, L] additive mask —
+        // an explicit mask forces MLX's SDPA onto the fallback path, which materializes
+        // the [1, heads, L, L] score matrix. Mirrors Qwen3VL.swift / mlx-vlm.
+        cu_seqlens.eval()?;
+        let seqlens_slice = cu_seqlens.as_slice::<i32>();
+        let attended = if seqlens_slice.len() <= 2 {
+            // Single image: one block covering the whole sequence — no slicing needed
+            fused_sdpa(&queries, &keys, &values, self.scale)?
+        } else {
+            let mut outputs = Vec::with_capacity(seqlens_slice.len() - 1);
+            for window in seqlens_slice.windows(2) {
+                let (start, end) = (window[0], window[1]);
+                if start >= end {
+                    continue;
+                }
+                outputs.push(fused_sdpa(
+                    &queries.index((.., .., start..end, ..)),
+                    &keys.index((.., .., start..end, ..)),
+                    &values.index((.., .., start..end, ..)),
+                    self.scale,
+                )?);
+            }
+            let output_refs: Vec<&Array> = outputs.iter().collect();
+            concatenate_axis(&output_refs, 2)?
+        };
 
         // Transpose back and reshape: [1, num_heads, seq_len, head_dim] -> [seq_len, hidden_size]
         let attended = attended
@@ -164,35 +172,48 @@ impl VisionAttention {
     }
 }
 
-/// Build a block-diagonal attention mask from cumulative sequence lengths.
+/// SDPA that always dispatches MLX's O(L)-memory fused Metal kernel
+/// (equivalent of `ensureFusedSDPA` in Qwen3VL.swift).
 ///
-/// The mask starts as all -1e9, and for each segment [start..end] defined by
-/// consecutive elements in cu_seqlens, the entries mask[start..end, start..end]
-/// are set to 0 (unmasked).
-fn build_block_diagonal_mask(
-    mask: Array,
-    cu_seqlens: &Array,
-    seq_len: i32,
+/// The fused kernel supports head dims 64/80/128; anything else falls back to
+/// composed ops that materialize the [L, L] score matrix per head. Zero-padding
+/// Q/K/V up to the next supported dim preserves the math exactly (padded dims
+/// contribute nothing to the dot products; `scale` is passed explicitly).
+fn fused_sdpa(
+    queries: &Array,
+    keys: &Array,
+    values: &Array,
+    scale: f32,
 ) -> Result<Array, Exception> {
-    use mlx_rs::ops::indexing::IndexMutOp;
+    const FUSED_DIMS: [i32; 3] = [64, 80, 128];
+    let head_dim = queries.dim(-1);
+    let target = FUSED_DIMS
+        .iter()
+        .copied()
+        .find(|&d| head_dim <= d)
+        .unwrap_or(head_dim);
 
-    let mut mask = mask;
-    let n_seqs = cu_seqlens.dim(0);
-
-    // Read cumulative sequence lengths as i32 values
-    cu_seqlens.eval()?;
-    let seqlens_slice = cu_seqlens.as_slice::<i32>();
-
-    for idx in 1..n_seqs {
-        let start = seqlens_slice[idx as usize - 1];
-        let end = seqlens_slice[idx as usize];
-        if start < end && end <= seq_len {
-            let zero = Array::from_f32(0.0);
-            mask.index_mut((.., start..end, start..end), zero);
-        }
+    if target == head_dim {
+        return scaled_dot_product_attention(
+            queries,
+            keys,
+            values,
+            scale,
+            None::<ScaledDotProductAttentionMask>,
+            None::<&Array>,
+        );
     }
 
-    Ok(mask)
+    let widths = [(0, 0), (0, 0), (0, 0), (0, target - head_dim)];
+    let attended = scaled_dot_product_attention(
+        mlx_rs::ops::pad(queries, &widths[..], None::<Array>, None)?,
+        mlx_rs::ops::pad(keys, &widths[..], None::<Array>, None)?,
+        mlx_rs::ops::pad(values, &widths[..], None::<Array>, None)?,
+        scale,
+        None::<ScaledDotProductAttentionMask>,
+        None::<&Array>,
+    )?;
+    Ok(attended.index((.., .., .., 0..head_dim)))
 }
 
 impl Module<&Array> for VisionAttention {
