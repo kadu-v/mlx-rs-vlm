@@ -62,39 +62,50 @@ pub fn generate_with_callback(
     let mut generated_tokens = Vec::new();
 
     let logits = model.prepare(input_ids, pixel_values, grid_thw, &mut cache)?;
+    let mut y = sample_token_array(&logits, params)?;
+    mlx_rs::transforms::async_eval([&y])?;
 
-    let mut next_token = sample_token(&logits, params)?;
-    generated_tokens.push(next_token);
+    for n in 0..params.max_tokens {
+        // 現トークンを item() で取り出す (= GPU 同期) 前に次ステップを投入しておき、
+        // 取り出し・EOS 判定・callback の裏で GPU に次の forward を進めさせる
+        // (mlx-lm の generate_step と同じ 1 ステップ先行パイプライン)。
+        // EOS や callback 打ち切りで先行分 1 ステップが無駄になるのは速度との交換。
+        let next_y = if n + 1 < params.max_tokens {
+            let logits = model.forward_text(&y, &mut cache)?;
+            let next = sample_token_array(&logits, params)?;
+            mlx_rs::transforms::async_eval([&next])?;
+            Some(next)
+        } else {
+            None
+        };
 
-    if !on_token(next_token) || params.eos_token_ids.contains(&next_token) {
-        return Ok(generated_tokens);
-    }
+        y.eval()?;
+        let token: i32 = y.item();
+        generated_tokens.push(token);
 
-    for _ in 1..params.max_tokens {
-        let token_array = Array::from_slice(&[next_token], &[1, 1]);
-        let logits = model.forward_text(&token_array, &mut cache)?;
-        next_token = sample_token(&logits, params)?;
-        generated_tokens.push(next_token);
-
-        if !on_token(next_token) || params.eos_token_ids.contains(&next_token) {
+        if !on_token(token) || params.eos_token_ids.contains(&token) {
             break;
+        }
+        match next_y {
+            Some(next) => y = next,
+            None => break,
         }
     }
 
     Ok(generated_tokens)
 }
 
-fn sample_token(logits: &Array, params: &GenerateParams) -> Result<i32, Exception> {
+/// logits の最終位置から次トークンをサンプルし、[1, 1] の int32 Array として
+/// **eval せずに** 返す。呼び出し側はこれをそのまま `forward_text` に渡すか、
+/// `async_eval` で先行評価してから `item()` で取り出す。
+fn sample_token_array(logits: &Array, params: &GenerateParams) -> Result<Array, Exception> {
     let seq_len = logits.shape()[1];
     let last_logits = logits.index((.., seq_len - 1, ..));
 
     // 負値・ゼロ近傍に加え NaN も greedy に落とす (NaN はどの比較でも false になるため
     // この形でないと sampling 経路に流れて logits が全部 NaN になる)
-    if !(params.temperature >= 1e-6) {
-        let token = argmax_axis(&last_logits, -1, None)?;
-        token.eval()?;
-        let token: i32 = token.item();
-        Ok(token)
+    let token = if !(params.temperature >= 1e-6) {
+        argmax_axis(&last_logits, -1, None)?
     } else {
         // categorical は unnormalized logits を期待するため softmax は不要。
         // key は渡さず global stream を使う (呼び出し側の random::seed() が効き、
@@ -106,15 +117,21 @@ fn sample_token(logits: &Array, params: &GenerateParams) -> Result<i32, Exceptio
             scaled = mask_below_top_k(&scaled, params.top_k)?;
         }
 
-        let token = if params.top_p < 1.0 {
+        if params.top_p < 1.0 {
             sample_top_p(&scaled, params.top_p)?
         } else {
             mlx_rs::random::categorical(&scaled, None, None, None)?
-        };
-        token.eval()?;
-        let token: i32 = token.item();
-        Ok(token)
-    }
+        }
+    };
+    // argmax / categorical は uint32 の [1] を返すので forward_text の入力形に揃える
+    token.reshape(&[1, 1])?.as_type::<i32>()
+}
+
+#[cfg(test)]
+fn sample_token(logits: &Array, params: &GenerateParams) -> Result<i32, Exception> {
+    let token = sample_token_array(logits, params)?;
+    token.eval()?;
+    Ok(token.item())
 }
 
 /// 降順 k 番目の logit をしきい値として、それ未満を -inf にマスクする。
