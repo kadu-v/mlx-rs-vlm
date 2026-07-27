@@ -36,6 +36,14 @@ struct Args {
     #[arg(short, long, default_value_t = 0.0)]
     temperature: f32,
 
+    /// nucleus sampling の確率質量(1.0 = 無効)
+    #[arg(long, default_value_t = 1.0)]
+    top_p: f32,
+
+    /// 上位 k 語彙に制限(0 = 無効)
+    #[arg(long, default_value_t = 0)]
+    top_k: usize,
+
     /// thinking モードを有効化(<think> ブロック付きで生成)
     #[arg(long)]
     thinking: bool,
@@ -93,6 +101,8 @@ fn main() -> Result<()> {
     let mut params = processor.generate_params();
     params.max_tokens = args.max_tokens;
     params.temperature = args.temperature;
+    params.top_p = args.top_p;
+    params.top_k = args.top_k;
 
     println!("Generating ({} input tokens)...", input.input_ids.shape()[1]);
     let start_time = std::time::Instant::now();
