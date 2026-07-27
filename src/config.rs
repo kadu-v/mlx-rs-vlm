@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::path::Path;
 
+use anyhow::Context;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -48,6 +50,13 @@ pub struct Qwen35Configuration {
 }
 
 impl Qwen35Configuration {
+    pub fn from_file(path: &Path) -> anyhow::Result<Self> {
+        let json = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        serde_json::from_str(&json)
+            .with_context(|| format!("Failed to parse {}", path.display()))
+    }
+
     pub fn image_token_index(&self) -> i32 {
         self.image_token_index.unwrap_or(self.image_token_id)
     }
@@ -255,6 +264,46 @@ impl Default for ProcessorConfig {
     }
 }
 
+/// preprocessor_config.json → processor_config.json → default の順で解決する。
+pub fn load_processor_config(model_dir: &Path) -> anyhow::Result<ProcessorConfig> {
+    for name in ["preprocessor_config.json", "processor_config.json"] {
+        let path = model_dir.join(name);
+        if path.exists() {
+            let json = std::fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read {}", path.display()))?;
+            return serde_json::from_str(&json)
+                .with_context(|| format!("Failed to parse {}", path.display()));
+        }
+    }
+    Ok(ProcessorConfig::default())
+}
+
+/// generation_config.json (存在すれば)。eos_token_id / pad_token_id のみ使用。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct GenerationConfig {
+    eos_token_id: Option<IntOrVec>,
+    #[serde(default)]
+    pub pad_token_id: Option<i32>,
+}
+
+impl GenerationConfig {
+    pub fn from_model_dir(model_dir: &Path) -> anyhow::Result<Option<Self>> {
+        let path = model_dir.join("generation_config.json");
+        if !path.exists() {
+            return Ok(None);
+        }
+        let json = std::fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        let config = serde_json::from_str(&json)
+            .with_context(|| format!("Failed to parse {}", path.display()))?;
+        Ok(Some(config))
+    }
+
+    pub fn eos_token_ids(&self) -> Option<Vec<i32>> {
+        self.eos_token_id.clone().map(|v| v.into_vec())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,6 +438,51 @@ mod tests {
         }"#;
         let config: Qwen35Configuration = serde_json::from_str(json).unwrap();
         assert_eq!(config.text_config.mrope_section(), [11, 11, 10]);
+    }
+
+    #[test]
+    fn test_load_processor_config_fallback() {
+        let dir = std::env::temp_dir().join("mlx_rs_vlm_test_proc_config");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // ファイルなし → default
+        let config = load_processor_config(&dir).unwrap();
+        assert_eq!(config.min_pixels, default_min_pixels());
+
+        // processor_config.json のみ (say2 モデルと同じ構成) → fallback で読まれ、
+        // 欠落フィールドは default で埋まる
+        std::fs::write(
+            dir.join("processor_config.json"),
+            r#"{"image_mean": [0.1, 0.1, 0.1], "image_std": [0.5, 0.5, 0.5]}"#,
+        )
+        .unwrap();
+        let config = load_processor_config(&dir).unwrap();
+        assert_eq!(config.image_mean, vec![0.1, 0.1, 0.1]);
+        assert_eq!(config.max_pixels, default_max_pixels());
+
+        // preprocessor_config.json があれば優先
+        std::fs::write(
+            dir.join("preprocessor_config.json"),
+            r#"{"image_mean": [0.2, 0.2, 0.2]}"#,
+        )
+        .unwrap();
+        let config = load_processor_config(&dir).unwrap();
+        assert_eq!(config.image_mean, vec![0.2, 0.2, 0.2]);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_generation_config() {
+        let config: GenerationConfig =
+            serde_json::from_str(r#"{"eos_token_id": [248046, 248044], "pad_token_id": 248055}"#)
+                .unwrap();
+        assert_eq!(config.eos_token_ids(), Some(vec![248046, 248044]));
+        assert_eq!(config.pad_token_id, Some(248055));
+
+        let config: GenerationConfig = serde_json::from_str(r#"{"use_cache": true}"#).unwrap();
+        assert_eq!(config.eos_token_ids(), None);
     }
 
     #[test]

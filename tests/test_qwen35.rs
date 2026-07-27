@@ -1,10 +1,10 @@
-use std::path::Path;
-
-use mlx_rs_vlm::config::{ProcessorConfig, Qwen35Configuration};
-use mlx_rs_vlm::generate::{generate, GenerateParams};
+use mlx_rs_vlm::chat::Message;
+use mlx_rs_vlm::config::Qwen35Configuration;
+use mlx_rs_vlm::generate::{GenerateParams, generate};
 use mlx_rs_vlm::hub::download_model;
 use mlx_rs_vlm::model::Qwen35VLM;
-use mlx_rs_vlm::weights::{load_weights, sanitize_weights};
+use mlx_rs_vlm::processor::Qwen35Processor;
+use mlx_rs_vlm::weights::{load_model, load_weights, sanitize_weights};
 
 const REPO_2B: &str = "mlx-community/Qwen3.5-2B-MLX-8bit";
 const REPO_08B: &str = "mlx-community/Qwen3.5-0.8B-MLX-8bit";
@@ -24,25 +24,11 @@ fn resolve_model_dir(repo_id: &str) -> std::path::PathBuf {
     }
 }
 
-fn load_config(model_dir: &Path) -> Qwen35Configuration {
-    let config_json = std::fs::read_to_string(model_dir.join("config.json")).unwrap();
-    serde_json::from_str(&config_json).unwrap()
-}
-
-fn load_model(model_dir: &Path) -> (Qwen35VLM, Qwen35Configuration) {
-    let config = load_config(model_dir);
-    let loaded = load_weights(model_dir).unwrap();
-    let result = sanitize_weights(loaded.weights, &config, loaded.is_mlx_format).unwrap();
-    let mut model = Qwen35VLM::new(&config, result.quant_info.as_ref()).unwrap();
-    model.load_weights(result.weights).unwrap();
-    (model, config)
-}
-
 mod sanitize {
     use super::*;
-    use std::collections::{HashMap, HashSet};
     use mlx_rs::Array;
     use mlx_rs::module::ModuleParameters;
+    use std::collections::{HashMap, HashSet};
 
     #[test]
     fn test_sanitize_key_mapping_patterns() {
@@ -156,7 +142,7 @@ mod weights {
     #[ignore]
     fn test_load_model_2b() {
         let model_dir = resolve_model_dir(REPO_2B);
-        let (_model, _config) = load_model(&model_dir);
+        let (_model, _config) = load_model(&model_dir).unwrap();
     }
 
     /// Requires model download. Run with: cargo test --test test_qwen35 -- --ignored
@@ -164,7 +150,7 @@ mod weights {
     #[ignore]
     fn test_weight_mapping_2b() {
         let model_dir = resolve_model_dir(REPO_2B);
-        let config = load_config(&model_dir);
+        let config = Qwen35Configuration::from_file(&model_dir.join("config.json")).unwrap();
         let loaded = load_weights(&model_dir).unwrap();
         let result = sanitize_weights(loaded.weights, &config, loaded.is_mlx_format).unwrap();
 
@@ -206,62 +192,70 @@ mod weights {
 mod text_generation {
     use super::*;
 
+    fn run_hello(repo_id: &str, label: &str) {
+        let model_dir = resolve_model_dir(repo_id);
+        let (mut model, _config) = load_model(&model_dir).unwrap();
+        let processor = Qwen35Processor::from_model_dir(&model_dir).unwrap();
+
+        let messages = [
+            Message::system("You are a helpful assistant."),
+            Message::user("Hello!"),
+        ];
+        let input = processor.prepare(&messages, &[]).unwrap();
+
+        let params = GenerateParams {
+            max_tokens: 32,
+            ..processor.generate_params()
+        };
+        let tokens = generate(&mut model, &input.input_ids, None, None, &params).unwrap();
+        assert!(!tokens.is_empty());
+
+        let decoded = processor.decode(&tokens).unwrap();
+        assert!(!decoded.is_empty(), "output should not be empty");
+        println!("Output ({label}): {decoded}");
+    }
+
     /// Requires model download. Run with: cargo test --test test_qwen35 -- --ignored
     #[test]
     #[ignore]
     fn test_hello_2b() {
-        let model_dir = resolve_model_dir(REPO_2B);
-        let (mut model, config) = load_model(&model_dir);
-
-        let tokenizer_path = model_dir.join("tokenizer.json");
-        let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path).unwrap();
-
-        let prompt = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nHello!<|im_end|>\n<|im_start|>assistant\n";
-        let encoding = tokenizer.encode(prompt, false).unwrap();
-        let input_ids: Vec<i32> = encoding.get_ids().iter().map(|&id| id as i32).collect();
-        let input_array = mlx_rs::Array::from_slice(&input_ids, &[1, input_ids.len() as i32]);
-
-        let params = GenerateParams {
-            max_tokens: 32,
-            temperature: 0.0,
-            ..GenerateParams::with_config(&config)
-        };
-        let tokens = generate(&mut model, &input_array, None, None, &params).unwrap();
-        assert!(!tokens.is_empty());
-
-        let token_ids: Vec<u32> = tokens.iter().map(|&id| id as u32).collect();
-        let decoded = tokenizer.decode(&token_ids, true).unwrap();
-        assert!(!decoded.is_empty(), "output should not be empty");
-        println!("Output (2B): {}", decoded);
+        run_hello(REPO_2B, "2B");
     }
 
     /// Requires model download. Run with: cargo test --test test_qwen35 -- --ignored
     #[test]
     #[ignore]
     fn test_hello_08b() {
-        let model_dir = resolve_model_dir(REPO_08B);
-        let (mut model, config) = load_model(&model_dir);
+        run_hello(REPO_08B, "0.8B");
+    }
 
-        let tokenizer_path = model_dir.join("tokenizer.json");
-        let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path).unwrap();
+    /// Processor を経由しない低レベル経路 (raw Array + generate) の契約を担保する。
+    /// `--no-default-features` の利用者はこの形で使う。
+    /// Requires model download. Run with: cargo test --test test_qwen35 -- --ignored
+    #[test]
+    #[ignore]
+    fn test_lowlevel_raw_array_2b() {
+        let model_dir = resolve_model_dir(REPO_2B);
+        let (mut model, config) = load_model(&model_dir).unwrap();
+
+        // encode だけは HfTokenizer を借りるが、プロンプト構築・テンソル化は手動
+        use mlx_rs_vlm::tokenizer::{HfTokenizer, Tokenizer as _};
+        let tokenizer = HfTokenizer::from_model_dir(&model_dir).unwrap();
 
         let prompt = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nHello!<|im_end|>\n<|im_start|>assistant\n";
-        let encoding = tokenizer.encode(prompt, false).unwrap();
-        let input_ids: Vec<i32> = encoding.get_ids().iter().map(|&id| id as i32).collect();
+        let input_ids = tokenizer.encode(prompt, false).unwrap();
         let input_array = mlx_rs::Array::from_slice(&input_ids, &[1, input_ids.len() as i32]);
 
         let params = GenerateParams {
             max_tokens: 32,
-            temperature: 0.0,
             ..GenerateParams::with_config(&config)
         };
         let tokens = generate(&mut model, &input_array, None, None, &params).unwrap();
         assert!(!tokens.is_empty());
 
-        let token_ids: Vec<u32> = tokens.iter().map(|&id| id as u32).collect();
-        let decoded = tokenizer.decode(&token_ids, true).unwrap();
+        let decoded = tokenizer.decode(&tokens, true).unwrap();
         assert!(!decoded.is_empty(), "output should not be empty");
-        println!("Output (0.8B): {}", decoded);
+        println!("Output (lowlevel 2B): {decoded}");
     }
 }
 
@@ -281,127 +275,93 @@ mod image_generation {
         image::DynamicImage::ImageRgb8(img)
     }
 
-    /// Requires model download. Run with: cargo test --test test_qwen35 -- --ignored
-    #[test]
-    #[ignore]
-    fn test_image_describe_08b() {
-        let model_dir = resolve_model_dir(REPO_08B);
-        let (mut model, config) = load_model(&model_dir);
+    fn run_image_describe(repo_id: &str, label: &str) {
+        let model_dir = resolve_model_dir(repo_id);
+        let (mut model, _config) = load_model(&model_dir).unwrap();
+        let processor = Qwen35Processor::from_model_dir(&model_dir).unwrap();
 
-        let tokenizer_path = model_dir.join("tokenizer.json");
-        let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path).unwrap();
-
-        let proc_config: ProcessorConfig = {
-            let proc_path = model_dir.join("preprocessor_config.json");
-            if proc_path.exists() {
-                let json = std::fs::read_to_string(&proc_path).unwrap();
-                serde_json::from_str(&json).unwrap()
-            } else {
-                ProcessorConfig::default()
-            }
-        };
-
-        let img = create_test_image();
-        let (pixels, thw) =
-            mlx_rs_vlm::image::preprocess_image(&img, &config.vision_config, &proc_config)
-                .unwrap();
-
-        let prompt = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>Describe this image.<|im_end|>\n<|im_start|>assistant\n";
-        let encoding = tokenizer.encode(prompt, false).unwrap();
-        let mut input_ids: Vec<i32> = encoding.get_ids().iter().map(|&id| id as i32).collect();
-
-        let thw_list = [thw];
-        input_ids = mlx_rs_vlm::image::expand_image_tokens(
-            &input_ids,
-            &thw_list,
-            config.image_token_id,
-            config.vision_start_token_id,
-            config.vision_end_token_id,
-            config.vision_config.spatial_merge_size,
-        );
-
-        let input_array = mlx_rs::Array::from_slice(&input_ids, &[1, input_ids.len() as i32]);
+        let messages = [
+            Message::system("You are a helpful assistant."),
+            Message::user_with_image("Describe this image."),
+        ];
+        let input = processor.prepare(&messages, &[create_test_image()]).unwrap();
 
         let params = GenerateParams {
             max_tokens: 64,
-            temperature: 0.0,
-            ..GenerateParams::with_config(&config)
+            ..processor.generate_params()
         };
         let tokens = generate(
             &mut model,
-            &input_array,
-            Some(&pixels),
-            Some(&thw_list),
+            &input.input_ids,
+            input.pixel_values.as_ref(),
+            input.grid_thw_slice(),
             &params,
         )
         .unwrap();
         assert!(!tokens.is_empty());
 
-        let token_ids: Vec<u32> = tokens.iter().map(|&id| id as u32).collect();
-        let decoded = tokenizer.decode(&token_ids, true).unwrap();
+        let decoded = processor.decode(&tokens).unwrap();
         assert!(!decoded.is_empty(), "output should not be empty");
-        println!("Image output (0.8B): {}", decoded);
+        println!("Image output ({label}): {decoded}");
+    }
+
+    /// Requires model download. Run with: cargo test --test test_qwen35 -- --ignored
+    #[test]
+    #[ignore]
+    fn test_image_describe_08b() {
+        run_image_describe(REPO_08B, "0.8B");
     }
 
     /// Requires model download. Run with: cargo test --test test_qwen35 -- --ignored
     #[test]
     #[ignore]
     fn test_image_describe_2b() {
+        run_image_describe(REPO_2B, "2B");
+    }
+
+    /// 2枚画像で vision attention の per-block 経路 (cu_seqlens のブロック数 > 1) を通す。
+    /// Requires model download. Run with: cargo test --test test_qwen35 -- --ignored
+    #[test]
+    #[ignore]
+    fn test_image_two_images_2b() {
+        use mlx_rs_vlm::chat::{ContentPart, Role};
+
         let model_dir = resolve_model_dir(REPO_2B);
-        let (mut model, config) = load_model(&model_dir);
+        let (mut model, _config) = load_model(&model_dir).unwrap();
+        let processor = Qwen35Processor::from_model_dir(&model_dir).unwrap();
 
-        let tokenizer_path = model_dir.join("tokenizer.json");
-        let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path).unwrap();
-
-        let proc_config: ProcessorConfig = {
-            let proc_path = model_dir.join("preprocessor_config.json");
-            if proc_path.exists() {
-                let json = std::fs::read_to_string(&proc_path).unwrap();
-                serde_json::from_str(&json).unwrap()
-            } else {
-                ProcessorConfig::default()
-            }
-        };
-
-        let img = create_test_image();
-        let (pixels, thw) =
-            mlx_rs_vlm::image::preprocess_image(&img, &config.vision_config, &proc_config)
-                .unwrap();
-
-        let prompt = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>Describe this image.<|im_end|>\n<|im_start|>assistant\n";
-        let encoding = tokenizer.encode(prompt, false).unwrap();
-        let mut input_ids: Vec<i32> = encoding.get_ids().iter().map(|&id| id as i32).collect();
-
-        let thw_list = [thw];
-        input_ids = mlx_rs_vlm::image::expand_image_tokens(
-            &input_ids,
-            &thw_list,
-            config.image_token_id,
-            config.vision_start_token_id,
-            config.vision_end_token_id,
-            config.vision_config.spatial_merge_size,
-        );
-
-        let input_array = mlx_rs::Array::from_slice(&input_ids, &[1, input_ids.len() as i32]);
+        let messages = [
+            Message::system("You are a helpful assistant."),
+            Message {
+                role: Role::User,
+                content: vec![
+                    ContentPart::Image,
+                    ContentPart::Image,
+                    ContentPart::Text("Compare these two images.".into()),
+                ],
+            },
+        ];
+        let input = processor
+            .prepare(&messages, &[create_test_image(), create_test_image()])
+            .unwrap();
+        assert_eq!(input.grid_thw.len(), 2);
 
         let params = GenerateParams {
             max_tokens: 64,
-            temperature: 0.0,
-            ..GenerateParams::with_config(&config)
+            ..processor.generate_params()
         };
         let tokens = generate(
             &mut model,
-            &input_array,
-            Some(&pixels),
-            Some(&thw_list),
+            &input.input_ids,
+            input.pixel_values.as_ref(),
+            input.grid_thw_slice(),
             &params,
         )
         .unwrap();
         assert!(!tokens.is_empty());
 
-        let token_ids: Vec<u32> = tokens.iter().map(|&id| id as u32).collect();
-        let decoded = tokenizer.decode(&token_ids, true).unwrap();
+        let decoded = processor.decode(&tokens).unwrap();
         assert!(!decoded.is_empty(), "output should not be empty");
-        println!("Image output (2B): {}", decoded);
+        println!("Two-image output (2B): {decoded}");
     }
 }

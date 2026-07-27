@@ -39,6 +39,19 @@ pub fn generate(
     grid_thw: Option<&[THW]>,
     params: &GenerateParams,
 ) -> Result<Vec<i32>, Exception> {
+    generate_with_callback(model, input_ids, pixel_values, grid_thw, params, |_| true)
+}
+
+/// 生成トークンごとに `on_token` を呼ぶ。`false` を返すと早期打ち切り。
+/// EOS トークンも callback に渡り、戻り値にも含まれる。
+pub fn generate_with_callback(
+    model: &mut Qwen35VLM,
+    input_ids: &Array,
+    pixel_values: Option<&Array>,
+    grid_thw: Option<&[THW]>,
+    params: &GenerateParams,
+    mut on_token: impl FnMut(i32) -> bool,
+) -> Result<Vec<i32>, Exception> {
     let mut cache = model.make_cache();
     let mut generated_tokens = Vec::new();
 
@@ -47,7 +60,7 @@ pub fn generate(
     let mut next_token = sample_token(&logits, params.temperature)?;
     generated_tokens.push(next_token);
 
-    if params.eos_token_ids.contains(&next_token) {
+    if !on_token(next_token) || params.eos_token_ids.contains(&next_token) {
         return Ok(generated_tokens);
     }
 
@@ -57,7 +70,7 @@ pub fn generate(
         next_token = sample_token(&logits, params.temperature)?;
         generated_tokens.push(next_token);
 
-        if params.eos_token_ids.contains(&next_token) {
+        if !on_token(next_token) || params.eos_token_ids.contains(&next_token) {
             break;
         }
     }

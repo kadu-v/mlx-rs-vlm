@@ -41,6 +41,22 @@ pub struct SanitizeResult {
     pub quant_info: Option<QuantizationInfo>,
 }
 
+/// config パース → 重みロード → sanitize → モデル構築までをまとめた便宜関数。
+pub fn load_model(
+    model_dir: impl AsRef<Path>,
+) -> Result<(crate::model::Qwen35VLM, Qwen35Configuration)> {
+    let dir = model_dir.as_ref();
+    let config = Qwen35Configuration::from_file(&dir.join("config.json"))?;
+    let loaded = load_weights(dir)?;
+    let result = sanitize_weights(loaded.weights, &config, loaded.is_mlx_format)?;
+    let mut model = crate::model::Qwen35VLM::new(&config, result.quant_info.as_ref())
+        .map_err(|e| anyhow::anyhow!("Failed to build model: {e}"))?;
+    model
+        .load_weights(result.weights)
+        .map_err(|e| anyhow::anyhow!("Failed to load weights: {e}"))?;
+    Ok((model, config))
+}
+
 fn collect_safetensors(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
     let mut files = Vec::new();
     for entry in std::fs::read_dir(dir)

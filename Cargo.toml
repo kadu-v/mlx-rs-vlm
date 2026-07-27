@@ -7,8 +7,9 @@ license = "MIT"
 repository = "https://github.com/kadu-v/mlx-rs-vlm"
 
 [features]
-default = ["hub"]
+default = ["hub", "tokenizer"]
 hub = ["dep:hf-hub"]
+tokenizer = ["dep:tokenizers", "dep:minijinja", "dep:minijinja-contrib"]
 
 [dependencies]
 mlx-rs = { git = "https://github.com/kadu-v/mlx-rs", tag = "v0.25.3-ios.1" }
@@ -20,14 +21,17 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 anyhow = "1"
 hf-hub = { version = "1.0.0-rc.1", features = ["blocking"], optional = true }
-
-[dev-dependencies]
-tokenizers = "0.21"
+# onig (C oniguruma) を避け pure-Rust の fancy-regex を使う (iOS クロスコンパイル対策)
+tokenizers = { version = "0.21", default-features = false, features = [
+    "fancy-regex",
+], optional = true }
+minijinja = { version = "2", features = ["json", "loop_controls"], optional = true }
+minijinja-contrib = { version = "2", features = ["pycompat"], optional = true }
 
 [[example]]
 name = "generate"
-required-features = ["hub"]
+required-features = ["hub", "tokenizer"]
 
 [[test]]
 name = "test_qwen35"
-required-features = ["hub"]
+required-features = ["hub", "tokenizer"]

@@ -12,7 +12,11 @@ pub fn download_model(repo_id: &str, revision: Option<&str>) -> Result<PathBuf> 
     let path = repo
         .snapshot_download()
         .maybe_revision(revision.map(String::from))
-        .maybe_allow_patterns(Some(vec!["*.safetensors".into(), "*.json".into()]))
+        .maybe_allow_patterns(Some(vec![
+            "*.safetensors".into(),
+            "*.json".into(),
+            "*.jinja".into(),
+        ]))
         .send()?;
     Ok(path)
 }
