@@ -20,6 +20,9 @@ impl MRoPE {
             .multiply(Array::from(2.0f32))?
             .divide(Array::from(dim.max(1) as f32))?;
         let inv_freq = Array::from(1.0f32).divide(Array::from(base).power(&exponents)?)?;
+        // This constant is outside ModuleParameters, so model.eval() does not
+        // evaluate it. Materialize it before inference can run on another thread.
+        inv_freq.eval()?;
 
         Ok(Self {
             inv_freq,
