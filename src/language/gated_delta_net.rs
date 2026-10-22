@@ -30,7 +30,7 @@ impl RmsNormGated {
     }
 
     pub fn forward(&mut self, x: &Array, gate: &Array) -> Result<Array, Exception> {
-        let normed = mlx_rs::fast::rms_norm(x, self.weight.as_ref(), self.eps)?;
+        let normed = mlx_rs::fast::rms_norm(x, Some(self.weight.as_ref()), self.eps)?;
         let gate_act = mlx_rs::nn::silu(gate)?;
         normed.multiply(gate_act)
     }

@@ -12,7 +12,7 @@ hub = ["dep:hf-hub"]
 tokenizer = ["dep:tokenizers", "dep:minijinja", "dep:minijinja-contrib"]
 
 [dependencies]
-mlx-rs = { git = "https://github.com/kadu-v/mlx-rs", tag = "v0.25.3-ios.1" }
+mlx-rs = { git = "https://github.com/kadu-v/mlx-rs", tag = "v0.26.0-ios.1" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 image = { version = "0.25", default-features = false, features = [

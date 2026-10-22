@@ -11,7 +11,7 @@ use mlx_rs::module::Module;
 use mlx_rs::nn::{Embedding, LayerNorm};
 use mlx_rs::ops::{
     arange, broadcast_to, concatenate_axis, cumsum, expand_dims, linspace, minimum, pad,
-    stack_axis, tile,
+    stack_axis, tile, LinspaceOptions,
 };
 use mlx_rs::ops::indexing::IndexOp;
 use mlx_rs::Array;
@@ -250,8 +250,12 @@ impl VisionModel {
             grid_sizes.push(h * w);
 
             // Create linspace indices
-            let h_linspace = linspace::<f32, f32>(0.0, max_index as f32, h)?;
-            let w_linspace = linspace::<f32, f32>(0.0, max_index as f32, w)?;
+            let h_linspace = linspace::<f32, f32>(
+                0.0, max_index as f32, LinspaceOptions { count: h, endpoint: true },
+            )?;
+            let w_linspace = linspace::<f32, f32>(
+                0.0, max_index as f32, LinspaceOptions { count: w, endpoint: true },
+            )?;
 
             // Floor and ceil
             let h_floor = h_linspace.as_type::<i32>()?;
