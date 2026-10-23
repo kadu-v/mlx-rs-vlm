@@ -113,7 +113,7 @@ impl Attention {
         let q_proj_output = self.q_proj.forward(x)?;
 
         let q_reshaped = q_proj_output.reshape(&[b, l, self.num_heads, -1])?;
-        let q_parts = q_reshaped.split(2, Some(-1))?;
+        let q_parts = q_reshaped.split_equal(2, Some(-1))?;
         let queries = q_parts[0].clone();
         let gate = q_parts[1].reshape(&[b, l, -1])?;
 

@@ -178,10 +178,10 @@ impl GatedDeltaNet {
 
         if let Some(m) = mask {
             let m_expanded = m.index((Ellipsis, NewAxis));
-            qkv = mlx::ops::r#where(&m_expanded, &qkv, &Array::from(0.0f32))?;
+            qkv = mlx::ops::select(&m_expanded, &qkv, &Array::from(0.0f32))?;
         }
 
-        let conv_input = mlx::ops::concatenate_axis(&[&conv_state, &qkv], 1)?;
+        let conv_input = mlx::ops::concatenate(&[&conv_state, &qkv], 1)?;
 
         let new_conv_len = conv_input.dim(1);
         let keep_start = new_conv_len - (self.conv_kernel_size - 1);
@@ -191,7 +191,7 @@ impl GatedDeltaNet {
         let conv_out = mlx::nn::silu(self.conv1d.forward(&conv_input)?)?;
 
         let split_indices = [self.key_dim, 2 * self.key_dim];
-        let conv_split = conv_out.split_axis(&split_indices, Some(-1))?;
+        let conv_split = conv_out.split_at_indices(&split_indices, Some(-1))?;
         let q = conv_split[0].reshape(&[b, s, self.num_k_heads, self.head_k_dim])?;
         let k = conv_split[1].reshape(&[b, s, self.num_k_heads, self.head_k_dim])?;
         let v = conv_split[2].reshape(&[b, s, self.num_v_heads, self.head_v_dim])?;
@@ -307,14 +307,14 @@ pub fn gated_delta_update(
         if let Some(m) = mask {
             let m_t = m.index((.., t_idx));
             let m_expanded = m_t.expand_dims(-1)?.expand_dims(-1)?.expand_dims(-1)?;
-            state = mlx::ops::r#where(&m_expanded, &state, &old_state)?;
+            state = mlx::ops::select(&m_expanded, &state, &old_state)?;
         }
 
         ys.push(y_t.as_dtype(q.dtype())?);
     }
 
     let y_refs: Vec<&Array> = ys.iter().collect();
-    let output = mlx::ops::stack_axis(&y_refs, 1)?;
+    let output = mlx::ops::stack(&y_refs, 1)?;
 
     Ok((output, state))
 }

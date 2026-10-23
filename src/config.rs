@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Context;
-use mlx_rs as mlx;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]

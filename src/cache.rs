@@ -47,8 +47,8 @@ impl KVCacheSimple {
 
         let (new_keys, new_values) = match (&self.keys, &self.values) {
             (Some(prev_k), Some(prev_v)) => {
-                let new_k = mlx::ops::concatenate_axis(&[prev_k, keys], 2)?;
-                let new_v = mlx::ops::concatenate_axis(&[prev_v, values], 2)?;
+                let new_k = mlx::ops::concatenate(&[prev_k, keys], 2)?;
+                let new_v = mlx::ops::concatenate(&[prev_v, values], 2)?;
                 (new_k, new_v)
             }
             _ => (keys.clone(), values.clone()),
@@ -116,7 +116,7 @@ pub fn create_causal_mask(n: i32, offset: i32) -> Result<Option<Array>, Exceptio
 
     let neg_inf = Array::from(f32::NEG_INFINITY);
     let zero = Array::from(0.0f32);
-    let mask = mlx::ops::r#where(&valid, &zero, &neg_inf)?;
+    let mask = mlx::ops::select(&valid, &zero, &neg_inf)?;
 
     let mask = mask.reshape(&[1, 1, n, total])?;
     Ok(Some(mask))

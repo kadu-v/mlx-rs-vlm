@@ -51,7 +51,9 @@ impl PatchMerger {
             config.hidden_size
         };
 
-        let norm = mlx::nn::LayerNormBuilder::new(norm_dim).eps(1e-6).build()?;
+        let norm = mlx::nn::LayerNormBuilder::new(norm_dim)
+            .eps(1e-6_f32)
+            .build()?;
 
         let linear_fc1 = Linear::new(merged_dim, merged_dim)?;
         let linear_fc2 = Linear::new(merged_dim, config.out_hidden_size)?;

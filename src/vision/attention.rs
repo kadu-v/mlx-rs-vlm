@@ -5,7 +5,7 @@ use mlx::macros::ModuleParameters;
 use mlx::module::Module;
 use mlx::nn::Linear;
 use mlx::ops::indexing::IndexOp;
-use mlx::ops::{concatenate_axis, cos, expand_dims, negative, sin, split};
+use mlx::ops::{concatenate, cos, expand_dims, negative, sin, split_equal};
 use mlx_rs as mlx;
 
 use crate::config::VisionConfiguration;
@@ -16,7 +16,7 @@ fn rotate_half(x: &Array) -> Result<Array, Exception> {
     let x1 = x.index((.., .., 0..half));
     let x2 = x.index((.., .., half..));
     let neg_x2 = negative(&x2)?;
-    concatenate_axis(&[&neg_x2, &x1], -1)
+    concatenate(&[&neg_x2, &x1], -1)
 }
 
 /// Apply rotary position embeddings to a tensor.
@@ -112,7 +112,7 @@ impl VisionAttention {
         qkv_states = qkv_states.transpose_axes(&[1, 0, 2, 3])?;
 
         // Split into Q, K, V: each [1, seq_len, num_heads, head_dim]
-        let parts = split(&qkv_states, 3, Some(0))?;
+        let parts = split_equal(&qkv_states, 3, Some(0))?;
         // Remove the leading dimension: [seq_len, num_heads, head_dim]
         let queries = parts[0].index(0);
         let keys = parts[1].index(0);
@@ -157,7 +157,7 @@ impl VisionAttention {
                 )?);
             }
             let output_refs: Vec<&Array> = outputs.iter().collect();
-            concatenate_axis(&output_refs, 2)?
+            concatenate(&output_refs, 2)?
         };
 
         // Transpose back and reshape: [1, num_heads, seq_len, head_dim] -> [seq_len, hidden_size]

@@ -1,4 +1,3 @@
-use mlx_rs as mlx;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

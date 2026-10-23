@@ -12,8 +12,8 @@ use mlx::module::Module;
 use mlx::nn::{Embedding, LayerNorm};
 use mlx::ops::indexing::IndexOp;
 use mlx::ops::{
-    LinspaceOptions, arange, broadcast_to, concatenate_axis, cumsum, expand_dims, linspace,
-    minimum, pad, stack_axis, tile,
+    LinspaceOptions, arange, broadcast_to, concatenate, cumsum, expand_dims, linspace, minimum,
+    pad, stack, tile,
 };
 use mlx_rs as mlx;
 
@@ -50,10 +50,10 @@ impl VisionBlock {
     /// Create a new VisionBlock from configuration.
     pub fn new(config: &VisionConfiguration) -> Result<Self, Exception> {
         let norm1 = mlx::nn::LayerNormBuilder::new(config.hidden_size)
-            .eps(1e-6)
+            .eps(1e-6_f32)
             .build()?;
         let norm2 = mlx::nn::LayerNormBuilder::new(config.hidden_size)
-            .eps(1e-6)
+            .eps(1e-6_f32)
             .build()?;
         let attn = VisionAttention::new(config)?;
         let mlp = VisionMlp::new(config)?;
@@ -200,7 +200,7 @@ impl VisionModel {
             let w_flat = w_index.flatten(None, None)?;
 
             // Stack coordinate pairs: [n_patches, 2]
-            let mut coords = stack_axis(&[&h_flat, &w_flat], -1)?;
+            let mut coords = stack(&[&h_flat, &w_flat], -1)?;
 
             // Repeat for temporal frames
             if grid.t > 1 {
@@ -216,7 +216,7 @@ impl VisionModel {
 
         // Concatenate all coordinates: [total_patches, 2]
         let coord_refs: Vec<&Array> = all_coords.iter().collect();
-        let all_coords_concat = concatenate_axis(&coord_refs, 0)?;
+        let all_coords_concat = concatenate(&coord_refs, 0)?;
 
         // Extract h and w indices
         let h_indices = all_coords_concat.index((.., 0));
@@ -227,7 +227,7 @@ impl VisionModel {
         let w_embeds = freq_table.index(&w_indices);
 
         // Concatenate height and width embeddings: [total_patches, dim]
-        concatenate_axis(&[&h_embeds, &w_embeds], -1)
+        concatenate(&[&h_embeds, &w_embeds], -1)
     }
 
     /// Compute bilinearly interpolated positional embeddings for the given grids.
@@ -317,7 +317,7 @@ impl VisionModel {
             .iter()
             .map(|idx_list| {
                 let refs: Vec<&Array> = idx_list.iter().collect();
-                let cat = concatenate_axis(&refs, 0).unwrap();
+                let cat = concatenate(&refs, 0).unwrap();
                 cat.as_type::<i32>().unwrap()
             })
             .collect();
@@ -326,7 +326,7 @@ impl VisionModel {
             .iter()
             .map(|w_list| {
                 let refs: Vec<&Array> = w_list.iter().collect();
-                concatenate_axis(&refs, 0).unwrap()
+                concatenate(&refs, 0).unwrap()
             })
             .collect();
 
@@ -370,7 +370,7 @@ impl VisionModel {
         }
 
         let result_refs: Vec<&Array> = result_embeds.iter().collect();
-        concatenate_axis(&result_refs, 0)
+        concatenate(&result_refs, 0)
     }
 
     /// Compute cumulative sequence lengths for block-diagonal attention.
@@ -392,7 +392,7 @@ impl VisionModel {
         }
 
         let len_refs: Vec<&Array> = seq_lengths.iter().collect();
-        let concat_lengths = concatenate_axis(&len_refs, 0)?.as_type::<i32>()?;
+        let concat_lengths = concatenate(&len_refs, 0)?.as_type::<i32>()?;
         let cum_sum = cumsum(&concat_lengths, None, None, None)?;
 
         // Pad with leading zero

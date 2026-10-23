@@ -67,7 +67,7 @@ pub fn generate_with_callback(
     mlx::transforms::async_eval([&y])?;
 
     for n in 0..params.max_tokens {
-        // 現トークンを item() で取り出す (= GPU 同期) 前に次ステップを投入しておき、
+        // 現トークンを item_cast() で取り出す (= GPU 同期) 前に次ステップを投入しておき、
         // 取り出し・EOS 判定・callback の裏で GPU に次の forward を進めさせる
         // (mlx-lm の generate_step と同じ 1 ステップ先行パイプライン)。
         // EOS や callback 打ち切りで先行分 1 ステップが無駄になるのは速度との交換。
@@ -81,7 +81,7 @@ pub fn generate_with_callback(
         };
 
         y.eval()?;
-        let token: i32 = y.item();
+        let token: i32 = y.item_cast();
         generated_tokens.push(token);
 
         if !on_token(token) || params.eos_token_ids.contains(&token) {
@@ -98,7 +98,7 @@ pub fn generate_with_callback(
 
 /// logits の最終位置から次トークンをサンプルし、[1, 1] の int32 Array として
 /// **eval せずに** 返す。呼び出し側はこれをそのまま `forward_text` に渡すか、
-/// `async_eval` で先行評価してから `item()` で取り出す。
+/// `async_eval` で先行評価してから `item_cast()` で取り出す。
 fn sample_token_array(logits: &Array, params: &GenerateParams) -> Result<Array, Exception> {
     let seq_len = logits.shape()[1];
     let last_logits = logits.index((.., seq_len - 1, ..));
@@ -132,7 +132,7 @@ fn sample_token_array(logits: &Array, params: &GenerateParams) -> Result<Array, 
 fn sample_token(logits: &Array, params: &GenerateParams) -> Result<i32, Exception> {
     let token = sample_token_array(logits, params)?;
     token.eval()?;
-    Ok(token.item())
+    Ok(token.item_cast())
 }
 
 /// 降順 k 番目の logit をしきい値として、それ未満を -inf にマスクする。
@@ -142,7 +142,7 @@ fn mask_below_top_k(scaled: &Array, top_k: usize) -> Result<Array, Exception> {
     let partitioned = mlx::ops::partition_axis(&neg, top_k as i32 - 1, -1)?;
     let kth_value = partitioned.index((.., top_k as i32 - 1)).negative()?;
     let below = scaled.lt(&kth_value)?;
-    mlx::ops::which(&below, Array::from(f32::NEG_INFINITY), scaled)
+    mlx::ops::select(&below, Array::from(f32::NEG_INFINITY), scaled)
 }
 
 /// nucleus (top-p) sampling。昇順ソート空間で累積確率が (1 - top_p) を超える
@@ -153,7 +153,7 @@ fn sample_top_p(scaled: &Array, top_p: f32) -> Result<Array, Exception> {
     let probs = mlx::ops::softmax_axis(&sorted_logits, -1, None)?;
     let cumulative = mlx::ops::cumsum(&probs, -1, None, None)?;
     let keep = cumulative.gt(Array::from(1.0 - top_p))?;
-    let masked = mlx::ops::which(&keep, &sorted_logits, Array::from(f32::NEG_INFINITY))?;
+    let masked = mlx::ops::select(&keep, &sorted_logits, Array::from(f32::NEG_INFINITY))?;
     let sorted_token = mlx::random::categorical(&masked, None, None, None)?;
     // categorical は末尾軸を潰した [1] を返すので、take_along_axis 用に [1, 1] へ戻す
     let sorted_token = sorted_token.reshape(&[1, 1])?;

@@ -226,7 +226,7 @@ fn merge_input_ids_with_image_features(
 
     let mask_int = special_mask.as_dtype(mlx::Dtype::Int32)?;
 
-    let n_special: i32 = mask_int.sum(None)?.item();
+    let n_special: i32 = mask_int.sum(None)?.item_cast();
     let n_features = image_features.dim(0);
     if n_special != n_features {
         return Err(Exception::custom(format!(
@@ -242,7 +242,7 @@ fn merge_input_ids_with_image_features(
     let gathered = gathered.reshape(input_embeds.shape())?;
 
     let special_expanded = special_mask.expand_dims(-1)?;
-    mlx::ops::r#where(&special_expanded, &gathered, input_embeds)
+    mlx::ops::select(&special_expanded, &gathered, input_embeds)
 }
 
 /// Compute 3D M-RoPE position IDs for text and vision tokens.

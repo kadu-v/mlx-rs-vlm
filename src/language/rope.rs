@@ -34,7 +34,7 @@ impl MRoPE {
     ) -> Result<(Array, Array), Exception> {
         let pos = position_ids.as_dtype(mlx::Dtype::Float32)?;
         let merged = self.interleave_axes(&pos)?;
-        let emb = mlx::ops::concatenate_axis(&[&merged, &merged], -1)?;
+        let emb = mlx::ops::concatenate(&[&merged, &merged], -1)?;
         let cos = emb.cos()?.as_dtype(target_dtype)?;
         let sin = emb.sin()?.as_dtype(target_dtype)?;
         Ok((cos, sin))
@@ -90,7 +90,7 @@ fn rotate_half(x: &Array) -> Result<Array, Exception> {
     let x1 = x.index((Ellipsis, ..half));
     let x2 = x.index((Ellipsis, half..));
     let neg_x2 = x2.negative()?;
-    mlx::ops::concatenate_axis(&[&neg_x2, &x1], -1)
+    mlx::ops::concatenate(&[&neg_x2, &x1], -1)
 }
 
 pub fn apply_multimodal_rotary_pos_emb(
@@ -119,14 +119,14 @@ pub fn apply_multimodal_rotary_pos_emb(
 
     let q_out = if rotary_dim < q_dim {
         let q_pass = q.index((Ellipsis, rotary_dim..));
-        mlx::ops::concatenate_axis(&[&q_rotated, &q_pass], -1)?
+        mlx::ops::concatenate(&[&q_rotated, &q_pass], -1)?
     } else {
         q_rotated
     };
 
     let k_out = if rotary_dim < k_dim {
         let k_pass = k.index((Ellipsis, rotary_dim..));
-        mlx::ops::concatenate_axis(&[&k_rotated, &k_pass], -1)?
+        mlx::ops::concatenate(&[&k_rotated, &k_pass], -1)?
     } else {
         k_rotated
     };
@@ -180,7 +180,7 @@ mod tests {
         let diff = cos_a.subtract(&cos_b).unwrap();
         diff.eval().unwrap();
         let abs_diff = diff.abs().unwrap();
-        let max_diff: f32 = abs_diff.max(None).unwrap().item();
+        let max_diff: f32 = abs_diff.max(None).unwrap().item_cast();
         assert!(
             max_diff > 1e-3,
             "T-only and H-only should produce different cos"

@@ -452,7 +452,7 @@ mod tests {
         let norm_w = sanitized
             .get("language_model.layers.0.self_attn.q_norm.weight")
             .unwrap();
-        let mean_val: f32 = norm_w.mean(None).unwrap().item();
+        let mean_val: f32 = norm_w.mean(None).unwrap().item_cast();
         assert!((mean_val - 1.0).abs() < 1e-5);
 
         let conv_w = sanitized
@@ -470,7 +470,7 @@ mod tests {
         let ln_w = sanitized
             .get("language_model.layers.0.input_layernorm.weight")
             .unwrap();
-        let ln_mean: f32 = ln_w.mean(None).unwrap().item();
+        let ln_mean: f32 = ln_w.mean(None).unwrap().item_cast();
         assert!(
             (ln_mean - 1.0).abs() < 1e-5,
             "input_layernorm should be +1.0"
@@ -479,14 +479,14 @@ mod tests {
         let pln_w = sanitized
             .get("language_model.layers.0.post_attention_layernorm.weight")
             .unwrap();
-        let pln_mean: f32 = pln_w.mean(None).unwrap().item();
+        let pln_mean: f32 = pln_w.mean(None).unwrap().item_cast();
         assert!(
             (pln_mean - 1.0).abs() < 1e-5,
             "post_attention_layernorm should be +1.0"
         );
 
         let final_norm = sanitized.get("language_model.norm.weight").unwrap();
-        let fn_mean: f32 = final_norm.mean(None).unwrap().item();
+        let fn_mean: f32 = final_norm.mean(None).unwrap().item_cast();
         assert!((fn_mean - 1.0).abs() < 1e-5, "final norm should be +1.0");
 
         let qi = result.quant_info.as_ref().unwrap();

@@ -147,7 +147,7 @@ impl Qwen35Processor {
             _ => {
                 let refs: Vec<&Array> = pixel_arrays.iter().collect();
                 Some(
-                    mlx::ops::concatenate_axis(&refs, 0)
+                    mlx::ops::concatenate(&refs, 0)
                         .map_err(|e| anyhow::anyhow!("Failed to concatenate pixel values: {e}"))?,
                 )
             }

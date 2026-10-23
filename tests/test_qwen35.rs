@@ -190,7 +190,10 @@ mod sanitize {
 
         let mut dummy_weights: HashMap<String, Array> = HashMap::new();
         for (key, value) in params.iter() {
-            let zeros = mlx::ops::zeros_like_device(value, mlx::StreamOrDevice::default()).unwrap();
+            let zeros = mlx::with_stream(mlx::StreamOrDevice::default().as_ref(), || {
+                mlx::ops::zeros_like(value)
+            })
+            .unwrap();
             dummy_weights.insert(key.to_string(), zeros);
         }
         model.load_weights(dummy_weights).unwrap();
