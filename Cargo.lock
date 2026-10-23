@@ -1825,7 +1825,7 @@ dependencies = [
 [[package]]
 name = "mlx-internal-macros"
 version = "0.26.0-ios.2"
-source = "git+https://github.com/kadu-v/mlx-rs?tag=v0.26.0-ios.2#d2e22ab2898d29e2a052be3333d0c4a152d97000"
+source = "git+https://github.com/kadu-v/mlx-rs?tag=v0.26.0-ios.2#118ce65e8f00c9940f616d09d84b1197f6eb6e8e"
 dependencies = [
  "darling 0.21.3",
  "itertools 0.14.0",
@@ -1837,7 +1837,7 @@ dependencies = [
 [[package]]
 name = "mlx-macros"
 version = "0.26.0-ios.2"
-source = "git+https://github.com/kadu-v/mlx-rs?tag=v0.26.0-ios.2#d2e22ab2898d29e2a052be3333d0c4a152d97000"
+source = "git+https://github.com/kadu-v/mlx-rs?tag=v0.26.0-ios.2#118ce65e8f00c9940f616d09d84b1197f6eb6e8e"
 dependencies = [
  "darling 0.21.3",
  "proc-macro2",
@@ -1848,7 +1848,7 @@ dependencies = [
 [[package]]
 name = "mlx-rs"
 version = "0.26.0-ios.2"
-source = "git+https://github.com/kadu-v/mlx-rs?tag=v0.26.0-ios.2#d2e22ab2898d29e2a052be3333d0c4a152d97000"
+source = "git+https://github.com/kadu-v/mlx-rs?tag=v0.26.0-ios.2#118ce65e8f00c9940f616d09d84b1197f6eb6e8e"
 dependencies = [
  "dyn-clone",
  "half",
@@ -1887,7 +1887,7 @@ dependencies = [
 [[package]]
 name = "mlx-sys"
 version = "0.2.0"
-source = "git+https://github.com/kadu-v/mlx-rs?tag=v0.26.0-ios.2#d2e22ab2898d29e2a052be3333d0c4a152d97000"
+source = "git+https://github.com/kadu-v/mlx-rs?tag=v0.26.0-ios.2#118ce65e8f00c9940f616d09d84b1197f6eb6e8e"
 dependencies = [
  "bindgen",
  "cc",
