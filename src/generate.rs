@@ -2,7 +2,6 @@ use mlx_rs::Array;
 use mlx_rs::error::Exception;
 use mlx_rs::ops::indexing::{IndexOp, argmax_axis};
 
-use crate::cache::Cache;
 use crate::config::{Qwen35Configuration, THW};
 use crate::model::Qwen35VLM;
 
@@ -51,46 +50,18 @@ pub fn generate(
 
 /// 生成トークンごとに `on_token` を呼ぶ。`false` を返すと早期打ち切り。
 /// EOS トークンも callback に渡り、戻り値にも含まれる。
-/// 正常終了・callback 中断・エラーのいずれでも、先行投入した処理の完了を待って返す。
 pub fn generate_with_callback(
     model: &mut Qwen35VLM,
     input_ids: &Array,
     pixel_values: Option<&Array>,
     grid_thw: Option<&[THW]>,
     params: &GenerateParams,
-    on_token: impl FnMut(i32) -> bool,
-) -> Result<Vec<i32>, Exception> {
-    let stream = mlx_rs::Stream::thread_local_or_default();
-    // cache を同期完了まで保持し、callback 中断後の先行評価も drain する。
-    let mut cache = model.make_cache();
-    let result = mlx_rs::with_stream(&stream, || {
-        generate_inner(
-            model,
-            input_ids,
-            pixel_values,
-            grid_thw,
-            params,
-            &mut cache,
-            on_token,
-        )
-    });
-    let synchronized = stream.synchronize();
-    // 生成自体が失敗した場合は、そのエラーを優先する。
-    result.and_then(|tokens| synchronized.map(|()| tokens))
-}
-
-fn generate_inner(
-    model: &mut Qwen35VLM,
-    input_ids: &Array,
-    pixel_values: Option<&Array>,
-    grid_thw: Option<&[THW]>,
-    params: &GenerateParams,
-    cache: &mut [Cache],
     mut on_token: impl FnMut(i32) -> bool,
 ) -> Result<Vec<i32>, Exception> {
+    let mut cache = model.make_cache();
     let mut generated_tokens = Vec::new();
 
-    let logits = model.prepare(input_ids, pixel_values, grid_thw, cache)?;
+    let logits = model.prepare(input_ids, pixel_values, grid_thw, &mut cache)?;
     let mut y = sample_token_array(&logits, params)?;
     mlx_rs::transforms::async_eval([&y])?;
 
@@ -100,7 +71,7 @@ fn generate_inner(
         // (mlx-lm の generate_step と同じ 1 ステップ先行パイプライン)。
         // EOS や callback 打ち切りで先行分 1 ステップが無駄になるのは速度との交換。
         let next_y = if n + 1 < params.max_tokens {
-            let logits = model.forward_text(&y, cache)?;
+            let logits = model.forward_text(&y, &mut cache)?;
             let next = sample_token_array(&logits, params)?;
             mlx_rs::transforms::async_eval([&next])?;
             Some(next)
@@ -194,67 +165,6 @@ fn sample_top_p(scaled: &Array, top_p: f32) -> Result<Array, Exception> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn tiny_model() -> Qwen35VLM {
-        let config = serde_json::from_value(serde_json::json!({
-            "model_type": "qwen3_5_vl",
-            "text_config": {
-                "hidden_size": 32, "num_hidden_layers": 1,
-                "num_attention_heads": 2, "num_key_value_heads": 1,
-                "head_dim": 16, "intermediate_size": 64, "vocab_size": 16,
-                "full_attention_interval": 1, "tie_word_embeddings": true,
-                "rope_parameters": { "mrope_section": [1, 1, 0] }
-            },
-            "vision_config": {
-                "depth": 1, "hidden_size": 32, "num_heads": 2,
-                "intermediate_size": 64, "out_hidden_size": 32
-            }
-        }))
-        .unwrap();
-        Qwen35VLM::new(&config, None).unwrap()
-    }
-
-    #[test]
-    fn generation_can_run_again_after_callback_cancellation_eos_and_error() {
-        let stream = mlx_rs::Stream::gpu();
-        mlx_rs::with_stream(&stream, || {
-            let mut model = tiny_model();
-            let input = Array::from_slice(&[1_i32, 2], &[1, 2]);
-            let mut params = GenerateParams {
-                max_tokens: 4,
-                eos_token_ids: vec![],
-                ..Default::default()
-            };
-            let mut callbacks = 0;
-            let cancelled = generate_with_callback(&mut model, &input, None, None, &params, |_| {
-                callbacks += 1;
-                false
-            })
-            .unwrap();
-            assert_eq!(callbacks, 1);
-            assert_eq!(cancelled.len(), 1);
-
-            params.eos_token_ids = (0..16).collect();
-            assert_eq!(
-                generate(&mut model, &input, None, None, &params)
-                    .unwrap()
-                    .len(),
-                1
-            );
-
-            // Missing grid metadata fails during prepare; the same model/stream
-            // must remain usable for the next request.
-            let pixels = Array::from(0.0_f32);
-            assert!(generate(&mut model, &input, Some(&pixels), None, &params).is_err());
-            params.eos_token_ids.clear();
-            assert_eq!(
-                generate(&mut model, &input, None, None, &params)
-                    .unwrap()
-                    .len(),
-                4
-            );
-        });
-    }
 
     fn params(temperature: f32) -> GenerateParams {
         GenerateParams {
