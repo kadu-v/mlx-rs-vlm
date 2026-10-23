@@ -3,7 +3,6 @@ use mlx::builder::Builder;
 use mlx::error::Exception;
 use mlx::macros::ModuleParameters;
 use mlx::module::Module;
-use mlx::nn::Conv3d;
 use mlx::utils::SingleOrTriple;
 use mlx_rs as mlx;
 
@@ -19,7 +18,7 @@ use crate::config::VisionConfiguration;
 #[module(root = mlx)]
 pub struct PatchEmbed {
     #[param]
-    pub proj: Conv3d,
+    pub proj: mlx::nn::Conv3d,
 
     pub patch_size: i32,
     pub temporal_patch_size: i32,

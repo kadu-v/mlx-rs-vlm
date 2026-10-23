@@ -1,6 +1,6 @@
 use mlx::Array;
 use mlx::error::Exception;
-use mlx::ops::indexing::{Ellipsis, IndexOp};
+use mlx::ops::indexing::IndexOp;
 use mlx_rs as mlx;
 
 #[derive(Debug)]
@@ -87,8 +87,8 @@ impl MRoPE {
 fn rotate_half(x: &Array) -> Result<Array, Exception> {
     let d = x.dim(-1);
     let half = d / 2;
-    let x1 = x.index((Ellipsis, ..half));
-    let x2 = x.index((Ellipsis, half..));
+    let x1 = x.index((mlx::ops::indexing::Ellipsis, ..half));
+    let x2 = x.index((mlx::ops::indexing::Ellipsis, half..));
     let neg_x2 = x2.negative()?;
     mlx::ops::concatenate(&[&neg_x2, &x1], -1)
 }
@@ -107,8 +107,8 @@ pub fn apply_multimodal_rotary_pos_emb(
     let q_dim = q.dim(-1);
     let k_dim = k.dim(-1);
 
-    let q_rot = q.index((Ellipsis, ..rotary_dim));
-    let k_rot = k.index((Ellipsis, ..rotary_dim));
+    let q_rot = q.index((mlx::ops::indexing::Ellipsis, ..rotary_dim));
+    let k_rot = k.index((mlx::ops::indexing::Ellipsis, ..rotary_dim));
 
     let q_rotated = q_rot
         .multiply(&cos)?
@@ -118,14 +118,14 @@ pub fn apply_multimodal_rotary_pos_emb(
         .add(rotate_half(&k_rot)?.multiply(&sin)?)?;
 
     let q_out = if rotary_dim < q_dim {
-        let q_pass = q.index((Ellipsis, rotary_dim..));
+        let q_pass = q.index((mlx::ops::indexing::Ellipsis, rotary_dim..));
         mlx::ops::concatenate(&[&q_rotated, &q_pass], -1)?
     } else {
         q_rotated
     };
 
     let k_out = if rotary_dim < k_dim {
-        let k_pass = k.index((Ellipsis, rotary_dim..));
+        let k_pass = k.index((mlx::ops::indexing::Ellipsis, rotary_dim..));
         mlx::ops::concatenate(&[&k_rotated, &k_pass], -1)?
     } else {
         k_rotated

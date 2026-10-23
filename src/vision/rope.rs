@@ -1,6 +1,5 @@
 use mlx::Array;
 use mlx::error::Exception;
-use mlx::ops::{arange, outer, power};
 use mlx_rs as mlx;
 
 /// Vision rotary embedding.
@@ -31,17 +30,17 @@ impl VisionRotaryEmbedding {
     /// with shape [seq_len, dimension].
     pub fn forward(&self, seq_len: i32) -> Result<Array, Exception> {
         // inv_freq = 1.0 / (theta ^ (arange(0, dim, 2) / dim))
-        let exp_range = arange::<_, f32>(None, self.dimension, Some(2))?;
+        let exp_range = mlx::ops::arange::<_, f32>(None, self.dimension, Some(2))?;
         let dim_f = Array::from_f32(self.dimension as f32);
         let exp_range = &exp_range / &dim_f;
         let theta_arr = Array::from_f32(self.theta);
-        let inv_freq = &Array::from_f32(1.0) / power(&theta_arr, &exp_range)?;
+        let inv_freq = &Array::from_f32(1.0) / mlx::ops::power(&theta_arr, &exp_range)?;
 
         // positions = [0, 1, ..., seq_len - 1]
-        let seq = arange::<_, f32>(None, seq_len, None)?;
+        let seq = mlx::ops::arange::<_, f32>(None, seq_len, None)?;
 
         // outer product: [seq_len, dim/2]
-        outer(&seq, &inv_freq)
+        mlx::ops::outer(&seq, &inv_freq)
     }
 }
 

@@ -3,9 +3,7 @@ use mlx::error::Exception;
 use mlx::fast::{ScaledDotProductAttentionMask, scaled_dot_product_attention};
 use mlx::macros::ModuleParameters;
 use mlx::module::Module;
-use mlx::nn::Linear;
 use mlx::ops::indexing::IndexOp;
-use mlx::ops::{concatenate, cos, expand_dims, negative, sin, split_equal};
 use mlx_rs as mlx;
 
 use crate::config::VisionConfiguration;
@@ -15,8 +13,8 @@ fn rotate_half(x: &Array) -> Result<Array, Exception> {
     let half = x.dim(-1) / 2;
     let x1 = x.index((.., .., 0..half));
     let x2 = x.index((.., .., half..));
-    let neg_x2 = negative(&x2)?;
-    concatenate(&[&neg_x2, &x1], -1)
+    let neg_x2 = mlx::ops::negative(&x2)?;
+    mlx::ops::concatenate(&[&neg_x2, &x1], -1)
 }
 
 /// Apply rotary position embeddings to a tensor.
@@ -28,18 +26,18 @@ fn rotate_half(x: &Array) -> Result<Array, Exception> {
 /// then applied via: x * cos(freqs) + rotate_half(x) * sin(freqs)
 fn apply_rotary(tensor: &Array, freqs: &Array) -> Result<Array, Exception> {
     // freqs: [seq_len, dim/2]
-    let mut cos_vals = cos(freqs)?;
-    let mut sin_vals = sin(freqs)?;
+    let mut cos_vals = mlx::ops::cos(freqs)?;
+    let mut sin_vals = mlx::ops::sin(freqs)?;
 
     // Expand dims and tile to match tensor shape:
     // [seq_len, dim/2] -> [seq_len, 1, dim/2] -> [seq_len, 1, dim] -> [1, seq_len, 1, dim]
-    cos_vals = expand_dims(&cos_vals, 1)?;
+    cos_vals = mlx::ops::expand_dims(&cos_vals, 1)?;
     cos_vals = mlx::ops::tile(&cos_vals, &[1, 1, 2])?;
-    cos_vals = expand_dims(&cos_vals, 0)?;
+    cos_vals = mlx::ops::expand_dims(&cos_vals, 0)?;
 
-    sin_vals = expand_dims(&sin_vals, 1)?;
+    sin_vals = mlx::ops::expand_dims(&sin_vals, 1)?;
     sin_vals = mlx::ops::tile(&sin_vals, &[1, 1, 2])?;
-    sin_vals = expand_dims(&sin_vals, 0)?;
+    sin_vals = mlx::ops::expand_dims(&sin_vals, 0)?;
 
     // rotated = tensor * cos + rotate_half(tensor) * sin
     let rotated_half = rotate_half(tensor)?;
@@ -61,11 +59,11 @@ pub struct VisionAttention {
 
     /// Combined Q, K, V projection: hidden_size -> 3 * hidden_size
     #[param]
-    pub qkv: Linear,
+    pub qkv: mlx::nn::Linear,
 
     /// Output projection: hidden_size -> hidden_size
     #[param]
-    pub proj: Linear,
+    pub proj: mlx::nn::Linear,
 }
 
 impl VisionAttention {
@@ -77,9 +75,9 @@ impl VisionAttention {
         let scale = (head_dim as f32).powf(-0.5);
 
         // QKV projection with bias
-        let qkv = Linear::new(dim, 3 * dim)?;
+        let qkv = mlx::nn::Linear::new(dim, 3 * dim)?;
         // Output projection with bias
-        let proj = Linear::new(dim, dim)?;
+        let proj = mlx::nn::Linear::new(dim, dim)?;
 
         Ok(Self {
             num_heads,
@@ -112,7 +110,7 @@ impl VisionAttention {
         qkv_states = qkv_states.transpose_axes(&[1, 0, 2, 3])?;
 
         // Split into Q, K, V: each [1, seq_len, num_heads, head_dim]
-        let parts = split_equal(&qkv_states, 3, Some(0))?;
+        let parts = mlx::ops::split_equal(&qkv_states, 3, Some(0))?;
         // Remove the leading dimension: [seq_len, num_heads, head_dim]
         let queries = parts[0].index(0);
         let keys = parts[1].index(0);
@@ -157,7 +155,7 @@ impl VisionAttention {
                 )?);
             }
             let output_refs: Vec<&Array> = outputs.iter().collect();
-            concatenate(&output_refs, 2)?
+            mlx::ops::concatenate(&output_refs, 2)?
         };
 
         // Transpose back and reshape: [1, num_heads, seq_len, head_dim] -> [seq_len, hidden_size]

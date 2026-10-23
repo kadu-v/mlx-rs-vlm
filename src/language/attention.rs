@@ -3,7 +3,6 @@ use mlx::builder::Builder;
 use mlx::error::Exception;
 use mlx::macros::ModuleParameters;
 use mlx::module::Module;
-use mlx::nn::{RmsNorm, RmsNormBuilder};
 use mlx_rs as mlx;
 
 use crate::cache::KVCacheSimple;
@@ -29,9 +28,9 @@ pub struct Attention {
     #[param]
     o_proj: LinearLike,
     #[param]
-    q_norm: RmsNorm,
+    q_norm: mlx::nn::RmsNorm,
     #[param]
-    k_norm: RmsNorm,
+    k_norm: mlx::nn::RmsNorm,
     rotary_embedding: MRoPE,
 }
 
@@ -72,10 +71,10 @@ impl Attention {
             quant_info.and_then(|qi| qi.for_path(&format!("{prefix}.o_proj"))),
         )?;
 
-        let q_norm = RmsNormBuilder::new(head_dim)
+        let q_norm = mlx::nn::RmsNormBuilder::new(head_dim)
             .eps(config.rms_norm_eps)
             .build()?;
-        let k_norm = RmsNormBuilder::new(head_dim)
+        let k_norm = mlx::nn::RmsNormBuilder::new(head_dim)
             .eps(config.rms_norm_eps)
             .build()?;
 

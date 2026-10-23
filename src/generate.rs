@@ -1,6 +1,6 @@
 use mlx::Array;
 use mlx::error::Exception;
-use mlx::ops::indexing::{IndexOp, argmax_axis};
+use mlx::ops::indexing::IndexOp;
 use mlx_rs as mlx;
 
 use crate::config::{Qwen35Configuration, THW};
@@ -106,7 +106,7 @@ fn sample_token_array(logits: &Array, params: &GenerateParams) -> Result<Array, 
     // 負値・ゼロ近傍に加え NaN も greedy に落とす (NaN はどの比較でも false になるため
     // この形でないと sampling 経路に流れて logits が全部 NaN になる)
     let token = if !(params.temperature >= 1e-6) {
-        argmax_axis(&last_logits, -1, None)?
+        mlx::ops::indexing::argmax_axis(&last_logits, -1, None)?
     } else {
         // categorical は unnormalized logits を期待するため softmax は不要。
         // key は渡さず global stream を使う (呼び出し側の random::seed() が効き、

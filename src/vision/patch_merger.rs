@@ -3,7 +3,6 @@ use mlx::builder::Builder;
 use mlx::error::Exception;
 use mlx::macros::ModuleParameters;
 use mlx::module::Module;
-use mlx::nn::{LayerNorm, Linear, gelu};
 use mlx_rs as mlx;
 
 use crate::config::VisionConfiguration;
@@ -18,13 +17,13 @@ use crate::config::VisionConfiguration;
 #[module(root = mlx)]
 pub struct PatchMerger {
     #[param]
-    pub norm: LayerNorm,
+    pub norm: mlx::nn::LayerNorm,
 
     #[param]
-    pub linear_fc1: Linear,
+    pub linear_fc1: mlx::nn::Linear,
 
     #[param]
-    pub linear_fc2: Linear,
+    pub linear_fc2: mlx::nn::Linear,
 
     pub merge_size: i32,
     pub hidden_size: i32,
@@ -55,8 +54,8 @@ impl PatchMerger {
             .eps(1e-6_f32)
             .build()?;
 
-        let linear_fc1 = Linear::new(merged_dim, merged_dim)?;
-        let linear_fc2 = Linear::new(merged_dim, config.out_hidden_size)?;
+        let linear_fc1 = mlx::nn::Linear::new(merged_dim, merged_dim)?;
+        let linear_fc2 = mlx::nn::Linear::new(merged_dim, config.out_hidden_size)?;
 
         Ok(Self {
             norm,
@@ -98,7 +97,7 @@ impl Module<&Array> for PatchMerger {
 
         // MLP: linear1 -> gelu -> linear2
         states = self.linear_fc1.forward(&states)?;
-        states = gelu(&states)?;
+        states = mlx::nn::gelu(&states)?;
         states = self.linear_fc2.forward(&states)?;
 
         Ok(states)

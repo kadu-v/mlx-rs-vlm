@@ -2,18 +2,14 @@ use mlx::Array;
 use mlx::builder::Builder;
 use mlx::error::Exception;
 use mlx::module::{Module, ModuleParam, ModuleParamMut, ModuleParamRef, ModuleParameters, Param};
-use mlx::nn::{
-    Embedding, Linear, QuantizedEmbedding, QuantizedEmbeddingBuilder, QuantizedLinear,
-    QuantizedLinearBuilder,
-};
 use mlx_rs as mlx;
 
 use crate::weights::{QuantizationMode, QuantizationSpec};
 
 #[derive(Debug)]
 pub enum LinearLike {
-    Dense(Linear),
-    Quantized(QuantizedLinear),
+    Dense(mlx::nn::Linear),
+    Quantized(mlx::nn::QuantizedLinear),
 }
 
 impl LinearLike {
@@ -26,7 +22,7 @@ impl LinearLike {
         match quant {
             Some(spec) => match spec.mode {
                 QuantizationMode::Affine => Ok(Self::Quantized(
-                    QuantizedLinearBuilder::new(in_features, out_features)
+                    mlx::nn::QuantizedLinearBuilder::new(in_features, out_features)
                         .group_size(spec.group_size)
                         .bits(spec.bits)
                         .bias(bias)
@@ -34,7 +30,7 @@ impl LinearLike {
                 )),
             },
             None => {
-                let mut l = Linear::new(in_features, out_features)?;
+                let mut l = mlx::nn::Linear::new(in_features, out_features)?;
                 if !bias {
                     l.bias = Param::new(None);
                 }
@@ -130,8 +126,8 @@ impl ModuleParameters for LinearLike {
 
 #[derive(Debug)]
 pub enum EmbeddingLike {
-    Dense(Embedding),
-    Quantized(QuantizedEmbedding),
+    Dense(mlx::nn::Embedding),
+    Quantized(mlx::nn::QuantizedEmbedding),
 }
 
 impl EmbeddingLike {
@@ -143,13 +139,13 @@ impl EmbeddingLike {
         match quant {
             Some(spec) => match spec.mode {
                 QuantizationMode::Affine => Ok(Self::Quantized(
-                    QuantizedEmbeddingBuilder::new(num_embeddings, dims)
+                    mlx::nn::QuantizedEmbeddingBuilder::new(num_embeddings, dims)
                         .group_size(spec.group_size)
                         .bits(spec.bits)
                         .build()?,
                 )),
             },
-            None => Ok(Self::Dense(Embedding::new(num_embeddings, dims)?)),
+            None => Ok(Self::Dense(mlx::nn::Embedding::new(num_embeddings, dims)?)),
         }
     }
 

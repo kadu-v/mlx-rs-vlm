@@ -3,7 +3,6 @@ use mlx::builder::Builder;
 use mlx::error::Exception;
 use mlx::macros::ModuleParameters;
 use mlx::module::Module;
-use mlx::nn::{RmsNorm, RmsNormBuilder};
 use mlx_rs as mlx;
 
 use crate::cache::Cache;
@@ -23,9 +22,9 @@ pub struct DecoderLayer {
     #[param]
     linear_attn: Option<GatedDeltaNet>,
     #[param]
-    input_layernorm: RmsNorm,
+    input_layernorm: mlx::nn::RmsNorm,
     #[param]
-    post_attention_layernorm: RmsNorm,
+    post_attention_layernorm: mlx::nn::RmsNorm,
     #[param]
     mlp: Mlp,
 }
@@ -59,10 +58,10 @@ impl DecoderLayer {
             None
         };
 
-        let input_layernorm = RmsNormBuilder::new(config.hidden_size)
+        let input_layernorm = mlx::nn::RmsNormBuilder::new(config.hidden_size)
             .eps(config.rms_norm_eps)
             .build()?;
-        let post_attention_layernorm = RmsNormBuilder::new(config.hidden_size)
+        let post_attention_layernorm = mlx::nn::RmsNormBuilder::new(config.hidden_size)
             .eps(config.rms_norm_eps)
             .build()?;
 

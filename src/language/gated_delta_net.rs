@@ -3,8 +3,7 @@ use mlx::builder::Builder;
 use mlx::error::Exception;
 use mlx::macros::ModuleParameters;
 use mlx::module::{Module, Param};
-use mlx::nn::{Conv1d, Conv1dBuilder};
-use mlx::ops::indexing::{Ellipsis, IndexOp, NewAxis};
+use mlx::ops::indexing::IndexOp;
 use mlx_rs as mlx;
 
 use crate::cache::MambaCache;
@@ -57,7 +56,7 @@ pub struct GatedDeltaNet {
     #[param]
     in_proj_a: LinearLike,
     #[param]
-    conv1d: Conv1d,
+    conv1d: mlx::nn::Conv1d,
     #[param]
     dt_bias: Param<Array>,
     #[param]
@@ -116,7 +115,7 @@ impl GatedDeltaNet {
             quant_info.and_then(|qi| qi.for_path(&format!("{prefix}.in_proj_a"))),
         )?;
 
-        let conv1d = Conv1dBuilder::new(conv_dim, conv_dim, conv_kernel_size)
+        let conv1d = mlx::nn::Conv1dBuilder::new(conv_dim, conv_dim, conv_kernel_size)
             .groups(conv_dim)
             .bias(false)
             .padding(0)
@@ -177,7 +176,7 @@ impl GatedDeltaNet {
         };
 
         if let Some(m) = mask {
-            let m_expanded = m.index((Ellipsis, NewAxis));
+            let m_expanded = m.index((mlx::ops::indexing::Ellipsis, mlx::ops::indexing::NewAxis));
             qkv = mlx::ops::select(&m_expanded, &qkv, &Array::from(0.0f32))?;
         }
 

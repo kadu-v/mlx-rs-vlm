@@ -11,7 +11,6 @@ use mlx::builder::Builder;
 use mlx::error::Exception;
 use mlx::macros::ModuleParameters;
 use mlx::module::Module;
-use mlx::nn::{RmsNorm, RmsNormBuilder};
 
 use crate::cache::{self, Cache, KVCacheSimple, MambaCache};
 use crate::config::TextConfiguration;
@@ -28,7 +27,7 @@ pub struct LanguageModel {
     #[param]
     pub layers: Vec<DecoderLayer>,
     #[param]
-    pub norm: RmsNorm,
+    pub norm: mlx::nn::RmsNorm,
     #[param]
     pub lm_head: Option<LinearLike>,
     pub config: TextConfiguration,
@@ -52,7 +51,7 @@ impl LanguageModel {
             layers.push(DecoderLayer::new(config, i, &layer_prefix, quant_info)?);
         }
 
-        let norm = RmsNormBuilder::new(config.hidden_size)
+        let norm = mlx::nn::RmsNormBuilder::new(config.hidden_size)
             .eps(config.rms_norm_eps)
             .build()?;
 
