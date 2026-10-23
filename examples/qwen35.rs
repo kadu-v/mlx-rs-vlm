@@ -4,11 +4,12 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use mlx_rs_vlm::chat::{ContentPart, Message, Role, TemplateOptions};
-use mlx_rs_vlm::generate::generate_with_callback;
-use mlx_rs_vlm::hub::download_model;
-use mlx_rs_vlm::processor::Qwen35Processor;
-use mlx_rs_vlm::weights::load_model;
+use mlx_rs_vlm as mlx_vlm;
+use mlx_vlm::chat::{ContentPart, Message, Role, TemplateOptions};
+use mlx_vlm::generate::generate_with_callback;
+use mlx_vlm::hub::download_model;
+use mlx_vlm::processor::Qwen35Processor;
+use mlx_vlm::weights::load_model;
 
 #[derive(Parser)]
 #[command(about = "Qwen 3.5 VLM inference example")]
@@ -104,7 +105,10 @@ fn main() -> Result<()> {
     params.top_p = args.top_p;
     params.top_k = args.top_k;
 
-    println!("Generating ({} input tokens)...", input.input_ids.shape()[1]);
+    println!(
+        "Generating ({} input tokens)...",
+        input.input_ids.shape()[1]
+    );
     let start_time = std::time::Instant::now();
 
     let mut detok = processor.stream_decoder();

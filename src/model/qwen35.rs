@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use mlx_rs::Array;
-use mlx_rs::error::Exception;
-use mlx_rs::macros::ModuleParameters;
-use mlx_rs::module::{Module, ModuleParameters, ModuleParametersExt};
-use mlx_rs::ops::indexing::IndexOp;
+use mlx::Array;
+use mlx::error::Exception;
+use mlx::macros::ModuleParameters;
+use mlx::module::{Module, ModuleParameters, ModuleParametersExt};
+use mlx::ops::indexing::IndexOp;
+use mlx_rs as mlx;
 
 use crate::cache::Cache;
 use crate::config::{Qwen35Configuration, THW};
@@ -14,7 +15,7 @@ use crate::vision::VisionModel;
 use crate::weights::QuantizationInfo;
 
 #[derive(Debug, ModuleParameters)]
-#[module(root = mlx_rs)]
+#[module(root = mlx)]
 pub struct Qwen35VLM {
     pub config: Qwen35Configuration,
     #[param]
@@ -42,10 +43,7 @@ impl Qwen35VLM {
         })
     }
 
-    pub fn load_weights(
-        &mut self,
-        weights: HashMap<String, Array>,
-    ) -> Result<(), Exception> {
+    pub fn load_weights(&mut self, weights: HashMap<String, Array>) -> Result<(), Exception> {
         let model_params = self.parameters().flatten();
         let model_keys: std::collections::HashSet<&str> =
             model_params.keys().map(|k| k.as_ref()).collect();
@@ -64,7 +62,10 @@ impl Qwen35VLM {
                 extra.len()
             );
             if !missing.is_empty() {
-                msg.push_str(&format!("\nMissing: {:?}", &missing[..missing.len().min(10)]));
+                msg.push_str(&format!(
+                    "\nMissing: {:?}",
+                    &missing[..missing.len().min(10)]
+                ));
             }
             if !extra.is_empty() {
                 msg.push_str(&format!("\nExtra: {:?}", &extra[..extra.len().min(10)]));
@@ -131,8 +132,7 @@ impl Qwen35VLM {
         let inputs_embeds = match (pixel_values, grid_thw) {
             (Some(pixels), Some(grids)) => {
                 let text_embeds = self.language_model.embed_tokens.forward(&input_ids_2d)?;
-                let (vision_hidden, _) =
-                    self.vision_tower.forward_with_grid(pixels, grids)?;
+                let (vision_hidden, _) = self.vision_tower.forward_with_grid(pixels, grids)?;
                 let vision_features = vision_hidden.as_dtype(text_embeds.dtype())?;
                 let merged = merge_input_ids_with_image_features(
                     &vision_features,
@@ -147,18 +147,14 @@ impl Qwen35VLM {
         };
 
         match &inputs_embeds {
-            Some(embeds) => self.language_model.forward(
-                None,
-                Some(embeds),
-                cache,
-                Some(&position_ids),
-            ),
-            None => self.language_model.forward(
-                Some(&input_ids_2d),
-                None,
-                cache,
-                Some(&position_ids),
-            ),
+            Some(embeds) => {
+                self.language_model
+                    .forward(None, Some(embeds), cache, Some(&position_ids))
+            }
+            None => {
+                self.language_model
+                    .forward(Some(&input_ids_2d), None, cache, Some(&position_ids))
+            }
         }
     }
 
@@ -180,41 +176,31 @@ impl Qwen35VLM {
         let deltas = if self.rope_deltas.is_empty() {
             Array::zeros::<i32>(&[batch])?
         } else {
-            let d = Array::from_slice(
-                &self.rope_deltas,
-                &[self.rope_deltas.len() as i32],
-            );
+            let d = Array::from_slice(&self.rope_deltas, &[self.rope_deltas.len() as i32]);
             if (self.rope_deltas.len() as i32) < batch {
-                let repeats = (batch + self.rope_deltas.len() as i32 - 1)
-                    / self.rope_deltas.len() as i32;
-                mlx_rs::ops::tile(&d, &[repeats])?
+                let repeats =
+                    (batch + self.rope_deltas.len() as i32 - 1) / self.rope_deltas.len() as i32;
+                mlx::ops::tile(&d, &[repeats])?
                     .index(..batch)
-                    .as_dtype(mlx_rs::Dtype::Int32)?
+                    .as_dtype(mlx::Dtype::Int32)?
             } else if (self.rope_deltas.len() as i32) > batch {
-                d.index(..batch).as_dtype(mlx_rs::Dtype::Int32)?
+                d.index(..batch).as_dtype(mlx::Dtype::Int32)?
             } else {
                 d
             }
         };
 
         let base = Array::arange::<_, i32>(None, seq_len, None)?;
-        let base = mlx_rs::ops::broadcast_to(
-            &base.reshape(&[1, seq_len])?,
-            &[batch, seq_len],
-        )?;
-        let offset = deltas.add(Array::from(cache_offset))?.reshape(&[batch, 1])?;
+        let base = mlx::ops::broadcast_to(&base.reshape(&[1, seq_len])?, &[batch, seq_len])?;
+        let offset = deltas
+            .add(Array::from(cache_offset))?
+            .reshape(&[batch, 1])?;
         let positions = base.add(&offset)?;
-        let position_ids = mlx_rs::ops::broadcast_to(
-            &positions.expand_dims(0)?,
-            &[3, batch, seq_len],
-        )?;
+        let position_ids =
+            mlx::ops::broadcast_to(&positions.expand_dims(0)?, &[3, batch, seq_len])?;
 
-        self.language_model.forward(
-            Some(&input_ids_2d),
-            None,
-            cache,
-            Some(&position_ids),
-        )
+        self.language_model
+            .forward(Some(&input_ids_2d), None, cache, Some(&position_ids))
     }
 
     fn get_cache_offset(&self, cache: &[Cache]) -> usize {
@@ -238,7 +224,7 @@ fn merge_input_ids_with_image_features(
     let video_mask = input_ids.eq(&Array::from(video_token_id))?;
     let special_mask = image_mask.logical_or(&video_mask)?;
 
-    let mask_int = special_mask.as_dtype(mlx_rs::Dtype::Int32)?;
+    let mask_int = special_mask.as_dtype(mlx::Dtype::Int32)?;
 
     let n_special: i32 = mask_int.sum(None)?.item();
     let n_features = image_features.dim(0);
@@ -248,15 +234,15 @@ fn merge_input_ids_with_image_features(
             n_special, n_features
         )));
     }
-    let cum_mask = mlx_rs::ops::cumsum(&mask_int, -1, None, None)?;
-    let indices = mlx_rs::ops::maximum(&(cum_mask - Array::from(1i32)), &Array::from(0i32))?;
+    let cum_mask = mlx::ops::cumsum(&mask_int, -1, None, None)?;
+    let indices = mlx::ops::maximum(&(cum_mask - Array::from(1i32)), &Array::from(0i32))?;
     let indices_flat = indices.reshape(&[-1])?;
 
-    let gathered = mlx_rs::ops::indexing::take_axis(image_features, &indices_flat, 0)?;
+    let gathered = mlx::ops::indexing::take_axis(image_features, &indices_flat, 0)?;
     let gathered = gathered.reshape(input_embeds.shape())?;
 
     let special_expanded = special_mask.expand_dims(-1)?;
-    mlx_rs::ops::r#where(&special_expanded, &gathered, input_embeds)
+    mlx::ops::r#where(&special_expanded, &gathered, input_embeds)
 }
 
 /// Compute 3D M-RoPE position IDs for text and vision tokens.
@@ -280,9 +266,9 @@ pub fn get_rope_index(
     if image_grid_thw.is_none() && video_grid_thw.is_none() {
         let pos = Array::arange::<_, i32>(None, seq_length, None)?;
         let pos = pos.reshape(&[1, seq_length])?;
-        let pos = mlx_rs::ops::broadcast_to(&pos, &[batch_size, seq_length])?;
+        let pos = mlx::ops::broadcast_to(&pos, &[batch_size, seq_length])?;
         let pos_3d = pos.expand_dims(0)?;
-        let pos_3d = mlx_rs::ops::broadcast_to(&pos_3d, &[3, batch_size, seq_length])?;
+        let pos_3d = mlx::ops::broadcast_to(&pos_3d, &[3, batch_size, seq_length])?;
         return Ok((pos_3d, vec![0i32; bs]));
     }
 
@@ -300,7 +286,7 @@ pub fn get_rope_index(
     };
 
     let mask_vals: Option<Vec<i32>> = if let Some(mask) = attention_mask {
-        let flat = mask.reshape(&[-1])?.as_dtype(mlx_rs::Dtype::Int32)?;
+        let flat = mask.reshape(&[-1])?.as_dtype(mlx::Dtype::Int32)?;
         flat.eval()?;
         Some(flat.as_slice::<i32>().to_vec())
     } else {
@@ -364,7 +350,9 @@ pub fn get_rope_index(
             let (llm_t, llm_h, llm_w, ed);
             if ed_image < ed_video {
                 let grid = image_grid_thw.and_then(|gs| gs.get(img_grid_idx));
-                if grid.is_none() { break; }
+                if grid.is_none() {
+                    break;
+                }
                 let g = grid.unwrap();
                 llm_t = g.t;
                 llm_h = g.h / spatial_merge_size;
@@ -374,7 +362,9 @@ pub fn get_rope_index(
                 ed = ed_image;
             } else {
                 let grid = video_grid_thw.and_then(|gs| gs.get(vid_grid_idx));
-                if grid.is_none() { break; }
+                if grid.is_none() {
+                    break;
+                }
                 let g = grid.unwrap();
                 llm_t = g.t;
                 llm_h = g.h / spatial_merge_size;
@@ -501,9 +491,16 @@ mod tests {
     fn test_get_rope_index_text_only() {
         let input_ids = Array::from_slice(&[1i32, 2, 3, 4, 5], &[1, 5]);
         let (result, rope_delta) = get_rope_index(
-            &input_ids, None, None, 2,
-            IMAGE_TOKEN_ID, VIDEO_TOKEN_ID, VISION_START_ID, None,
-        ).unwrap();
+            &input_ids,
+            None,
+            None,
+            2,
+            IMAGE_TOKEN_ID,
+            VIDEO_TOKEN_ID,
+            VISION_START_ID,
+            None,
+        )
+        .unwrap();
         assert_eq!(result.shape(), &[3, 1, 5]);
         assert_eq!(rope_delta, vec![0]);
         let flat = result.reshape(&[15]).unwrap();
@@ -521,18 +518,30 @@ mod tests {
         // [text, vision_start, img_pad×4, vision_end, text]
         // Swift scans for imageTokenId: ed=2, textLen=2 (text1 + vision_start)
         let tokens = vec![
-            1i32, VISION_START_ID,
-            IMAGE_TOKEN_ID, IMAGE_TOKEN_ID, IMAGE_TOKEN_ID, IMAGE_TOKEN_ID,
-            VISION_END_ID, 99,
+            1i32,
+            VISION_START_ID,
+            IMAGE_TOKEN_ID,
+            IMAGE_TOKEN_ID,
+            IMAGE_TOKEN_ID,
+            IMAGE_TOKEN_ID,
+            VISION_END_ID,
+            99,
         ];
         let len = tokens.len();
         let input_ids = Array::from_slice(&tokens, &[1, len as i32]);
         let grid = [THW { t: 1, h: 4, w: 4 }]; // llm_grid 1×2×2, n_vis=4
 
         let (result, rope_delta) = get_rope_index(
-            &input_ids, Some(&grid), None, 2,
-            IMAGE_TOKEN_ID, VIDEO_TOKEN_ID, VISION_START_ID, None,
-        ).unwrap();
+            &input_ids,
+            Some(&grid),
+            None,
+            2,
+            IMAGE_TOKEN_ID,
+            VIDEO_TOKEN_ID,
+            VISION_START_ID,
+            None,
+        )
+        .unwrap();
         assert_eq!(result.shape(), &[3, 1, len as i32]);
 
         let flat = result.reshape(&[(3 * len) as i32]).unwrap();
@@ -594,9 +603,16 @@ mod tests {
         let mask = Array::from_slice(&mask_vals, &[1, len as i32]);
 
         let (result, rope_delta) = get_rope_index(
-            &input_ids, None, None, 2,
-            IMAGE_TOKEN_ID, VIDEO_TOKEN_ID, VISION_START_ID, Some(&mask),
-        ).unwrap();
+            &input_ids,
+            None,
+            None,
+            2,
+            IMAGE_TOKEN_ID,
+            VIDEO_TOKEN_ID,
+            VISION_START_ID,
+            Some(&mask),
+        )
+        .unwrap();
         assert_eq!(result.shape(), &[3, 1, len as i32]);
 
         // Text-only with no vision tokens: returns simple arange, delta = 0
@@ -619,9 +635,15 @@ mod tests {
         // Left-padded: [PAD, text, vision_start, img×4, vision_end, text]
         // mask:         [0,   1,    1,            1×4,   1,          1   ]
         let tokens = vec![
-            0i32, 1, VISION_START_ID,
-            IMAGE_TOKEN_ID, IMAGE_TOKEN_ID, IMAGE_TOKEN_ID, IMAGE_TOKEN_ID,
-            VISION_END_ID, 99,
+            0i32,
+            1,
+            VISION_START_ID,
+            IMAGE_TOKEN_ID,
+            IMAGE_TOKEN_ID,
+            IMAGE_TOKEN_ID,
+            IMAGE_TOKEN_ID,
+            VISION_END_ID,
+            99,
         ];
         let mask_vals = vec![0i32, 1, 1, 1, 1, 1, 1, 1, 1];
         let len = tokens.len();
@@ -630,9 +652,16 @@ mod tests {
         let grid = [THW { t: 1, h: 4, w: 4 }];
 
         let (result, rope_delta) = get_rope_index(
-            &input_ids, Some(&grid), None, 2,
-            IMAGE_TOKEN_ID, VIDEO_TOKEN_ID, VISION_START_ID, Some(&mask),
-        ).unwrap();
+            &input_ids,
+            Some(&grid),
+            None,
+            2,
+            IMAGE_TOKEN_ID,
+            VIDEO_TOKEN_ID,
+            VISION_START_ID,
+            Some(&mask),
+        )
+        .unwrap();
         assert_eq!(result.shape(), &[3, 1, len as i32]);
 
         let flat = result.reshape(&[(3 * len) as i32]).unwrap();

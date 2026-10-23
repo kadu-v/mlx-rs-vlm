@@ -4,13 +4,14 @@ pub mod gated_delta_net;
 pub mod linear_like;
 pub mod mlp;
 pub mod rope;
+use mlx_rs as mlx;
 
-use mlx_rs::Array;
-use mlx_rs::error::Exception;
-use mlx_rs::macros::ModuleParameters;
-use mlx_rs::module::Module;
-use mlx_rs::nn::{RmsNorm, RmsNormBuilder};
-use mlx_rs::builder::Builder;
+use mlx::Array;
+use mlx::builder::Builder;
+use mlx::error::Exception;
+use mlx::macros::ModuleParameters;
+use mlx::module::Module;
+use mlx::nn::{RmsNorm, RmsNormBuilder};
 
 use crate::cache::{self, Cache, KVCacheSimple, MambaCache};
 use crate::config::TextConfiguration;
@@ -20,7 +21,7 @@ use self::decoder::DecoderLayer;
 use self::linear_like::{EmbeddingLike, LinearLike};
 
 #[derive(Debug, ModuleParameters)]
-#[module(root = mlx_rs)]
+#[module(root = mlx)]
 pub struct LanguageModel {
     #[param]
     pub embed_tokens: EmbeddingLike,
@@ -57,7 +58,12 @@ impl LanguageModel {
 
         let lm_head = if !config.tie_word_embeddings {
             let quant = quant_info.and_then(|qi| qi.for_path(&format!("{prefix}.lm_head")));
-            Some(LinearLike::new(config.hidden_size, config.vocab_size, false, quant)?)
+            Some(LinearLike::new(
+                config.hidden_size,
+                config.vocab_size,
+                false,
+                quant,
+            )?)
         } else {
             None
         };
@@ -81,9 +87,11 @@ impl LanguageModel {
         let mut h = match (inputs, inputs_embeds) {
             (Some(ids), None) => self.embed_tokens.forward(ids)?,
             (None, Some(embeds)) => embeds.clone(),
-            _ => return Err(Exception::custom(
-                "Exactly one of inputs or inputs_embeds must be provided",
-            )),
+            _ => {
+                return Err(Exception::custom(
+                    "Exactly one of inputs or inputs_embeds must be provided",
+                ));
+            }
         };
 
         let t = h.dim(1);
@@ -136,17 +144,11 @@ impl LanguageModel {
     }
 
     fn first_full_attention_layer_idx(&self) -> usize {
-        self.layers
-            .iter()
-            .position(|l| !l.is_linear())
-            .unwrap_or(0)
+        self.layers.iter().position(|l| !l.is_linear()).unwrap_or(0)
     }
 
     fn first_linear_layer_idx(&self) -> usize {
-        self.layers
-            .iter()
-            .position(|l| l.is_linear())
-            .unwrap_or(0)
+        self.layers.iter().position(|l| l.is_linear()).unwrap_or(0)
     }
 
     fn create_ssm_mask(&self, h: &Array, cache: &Cache) -> Result<Option<Array>, Exception> {

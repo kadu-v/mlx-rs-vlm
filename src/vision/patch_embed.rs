@@ -1,10 +1,11 @@
-use mlx_rs::builder::Builder;
-use mlx_rs::error::Exception;
-use mlx_rs::macros::ModuleParameters;
-use mlx_rs::module::Module;
-use mlx_rs::nn::Conv3d;
-use mlx_rs::utils::SingleOrTriple;
-use mlx_rs::Array;
+use mlx::Array;
+use mlx::builder::Builder;
+use mlx::error::Exception;
+use mlx::macros::ModuleParameters;
+use mlx::module::Module;
+use mlx::nn::Conv3d;
+use mlx::utils::SingleOrTriple;
+use mlx_rs as mlx;
 
 use crate::config::VisionConfiguration;
 
@@ -15,7 +16,7 @@ use crate::config::VisionConfiguration;
 ///
 /// The Conv3d in mlx-rs expects channels-last input: [N, D, H, W, C].
 #[derive(Debug, Clone, ModuleParameters)]
-#[module(root = mlx_rs)]
+#[module(root = mlx)]
 pub struct PatchEmbed {
     #[param]
     pub proj: Conv3d,
@@ -38,7 +39,7 @@ impl PatchEmbed {
             config.patch_size,
         );
 
-        let proj = mlx_rs::nn::Conv3dBuilder::new(config.in_channels, config.hidden_size, kernel)
+        let proj = mlx::nn::Conv3dBuilder::new(config.in_channels, config.hidden_size, kernel)
             .stride(kernel)
             .bias(true)
             .build()?;

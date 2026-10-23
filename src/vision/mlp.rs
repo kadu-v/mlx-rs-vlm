@@ -1,8 +1,9 @@
-use mlx_rs::error::Exception;
-use mlx_rs::macros::ModuleParameters;
-use mlx_rs::module::Module;
-use mlx_rs::nn::{gelu_fast_approximate, Linear};
-use mlx_rs::Array;
+use mlx::Array;
+use mlx::error::Exception;
+use mlx::macros::ModuleParameters;
+use mlx::module::Module;
+use mlx::nn::{Linear, gelu_fast_approximate};
+use mlx_rs as mlx;
 
 use crate::config::VisionConfiguration;
 
@@ -12,7 +13,7 @@ use crate::config::VisionConfiguration;
 /// with GELU (fast approximation) activation between layers.
 /// Both linear layers include bias.
 #[derive(Debug, Clone, ModuleParameters)]
-#[module(root = mlx_rs)]
+#[module(root = mlx)]
 pub struct VisionMlp {
     #[param]
     pub linear_fc1: Linear,
@@ -28,7 +29,10 @@ impl VisionMlp {
         let linear_fc1 = Linear::new(config.hidden_size, config.intermediate_size)?;
         let linear_fc2 = Linear::new(config.intermediate_size, config.hidden_size)?;
 
-        Ok(Self { linear_fc1, linear_fc2 })
+        Ok(Self {
+            linear_fc1,
+            linear_fc2,
+        })
     }
 
     /// Create a new VisionMlp with explicit dimensions.
@@ -36,7 +40,10 @@ impl VisionMlp {
         let linear_fc1 = Linear::new(dim, hidden_dim)?;
         let linear_fc2 = Linear::new(hidden_dim, dim)?;
 
-        Ok(Self { linear_fc1, linear_fc2 })
+        Ok(Self {
+            linear_fc1,
+            linear_fc2,
+        })
     }
 }
 

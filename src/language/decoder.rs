@@ -1,9 +1,10 @@
-use mlx_rs::Array;
-use mlx_rs::builder::Builder;
-use mlx_rs::error::Exception;
-use mlx_rs::macros::ModuleParameters;
-use mlx_rs::module::Module;
-use mlx_rs::nn::{RmsNorm, RmsNormBuilder};
+use mlx::Array;
+use mlx::builder::Builder;
+use mlx::error::Exception;
+use mlx::macros::ModuleParameters;
+use mlx::module::Module;
+use mlx::nn::{RmsNorm, RmsNormBuilder};
+use mlx_rs as mlx;
 
 use crate::cache::Cache;
 use crate::config::TextConfiguration;
@@ -14,7 +15,7 @@ use super::gated_delta_net::GatedDeltaNet;
 use super::mlp::Mlp;
 
 #[derive(Debug, ModuleParameters)]
-#[module(root = mlx_rs)]
+#[module(root = mlx)]
 pub struct DecoderLayer {
     is_linear: bool,
     #[param]
@@ -39,13 +40,21 @@ impl DecoderLayer {
         let is_linear = config.is_linear_layer(layer_idx);
 
         let self_attn = if !is_linear {
-            Some(Attention::new(config, &format!("{prefix}.self_attn"), quant_info)?)
+            Some(Attention::new(
+                config,
+                &format!("{prefix}.self_attn"),
+                quant_info,
+            )?)
         } else {
             None
         };
 
         let linear_attn = if is_linear {
-            Some(GatedDeltaNet::new(config, &format!("{prefix}.linear_attn"), quant_info)?)
+            Some(GatedDeltaNet::new(
+                config,
+                &format!("{prefix}.linear_attn"),
+                quant_info,
+            )?)
         } else {
             None
         };
@@ -58,7 +67,7 @@ impl DecoderLayer {
             .build()?;
 
         if config.num_experts.unwrap_or(0) > 0 {
-            return Err(mlx_rs::error::Exception::custom(
+            return Err(mlx::error::Exception::custom(
                 "MoE (num_experts > 0) is not supported",
             ));
         }

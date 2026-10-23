@@ -1,8 +1,12 @@
-use mlx_rs::module::{Module, ModuleParameters, ModuleParamRef, ModuleParamMut, ModuleParam, Param};
-use mlx_rs::nn::{Linear, QuantizedLinear, QuantizedLinearBuilder, Embedding, QuantizedEmbedding, QuantizedEmbeddingBuilder};
-use mlx_rs::builder::Builder;
-use mlx_rs::error::Exception;
-use mlx_rs::Array;
+use mlx::Array;
+use mlx::builder::Builder;
+use mlx::error::Exception;
+use mlx::module::{Module, ModuleParam, ModuleParamMut, ModuleParamRef, ModuleParameters, Param};
+use mlx::nn::{
+    Embedding, Linear, QuantizedEmbedding, QuantizedEmbeddingBuilder, QuantizedLinear,
+    QuantizedLinearBuilder,
+};
+use mlx_rs as mlx;
 
 use crate::weights::{QuantizationMode, QuantizationSpec};
 
@@ -145,9 +149,7 @@ impl EmbeddingLike {
                         .build()?,
                 )),
             },
-            None => Ok(Self::Dense(
-                Embedding::new(num_embeddings, dims)?,
-            )),
+            None => Ok(Self::Dense(Embedding::new(num_embeddings, dims)?)),
         }
     }
 

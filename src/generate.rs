@@ -1,6 +1,7 @@
-use mlx_rs::Array;
-use mlx_rs::error::Exception;
-use mlx_rs::ops::indexing::{IndexOp, argmax_axis};
+use mlx::Array;
+use mlx::error::Exception;
+use mlx::ops::indexing::{IndexOp, argmax_axis};
+use mlx_rs as mlx;
 
 use crate::config::{Qwen35Configuration, THW};
 use crate::model::Qwen35VLM;
@@ -63,7 +64,7 @@ pub fn generate_with_callback(
 
     let logits = model.prepare(input_ids, pixel_values, grid_thw, &mut cache)?;
     let mut y = sample_token_array(&logits, params)?;
-    mlx_rs::transforms::async_eval([&y])?;
+    mlx::transforms::async_eval([&y])?;
 
     for n in 0..params.max_tokens {
         // 現トークンを item() で取り出す (= GPU 同期) 前に次ステップを投入しておき、
@@ -73,7 +74,7 @@ pub fn generate_with_callback(
         let next_y = if n + 1 < params.max_tokens {
             let logits = model.forward_text(&y, &mut cache)?;
             let next = sample_token_array(&logits, params)?;
-            mlx_rs::transforms::async_eval([&next])?;
+            mlx::transforms::async_eval([&next])?;
             Some(next)
         } else {
             None
@@ -120,7 +121,7 @@ fn sample_token_array(logits: &Array, params: &GenerateParams) -> Result<Array, 
         if params.top_p < 1.0 {
             sample_top_p(&scaled, params.top_p)?
         } else {
-            mlx_rs::random::categorical(&scaled, None, None, None)?
+            mlx::random::categorical(&scaled, None, None, None)?
         }
     };
     // argmax / categorical は uint32 の [1] を返すので forward_text の入力形に揃える
@@ -138,27 +139,25 @@ fn sample_token(logits: &Array, params: &GenerateParams) -> Result<i32, Exceptio
 /// しきい値と同値のタイが k 個を超えて残ることは許容する (mlx-lm と同様の近似)。
 fn mask_below_top_k(scaled: &Array, top_k: usize) -> Result<Array, Exception> {
     let neg = scaled.negative()?;
-    let partitioned = mlx_rs::ops::partition_axis(&neg, top_k as i32 - 1, -1)?;
-    let kth_value = partitioned
-        .index((.., top_k as i32 - 1))
-        .negative()?;
+    let partitioned = mlx::ops::partition_axis(&neg, top_k as i32 - 1, -1)?;
+    let kth_value = partitioned.index((.., top_k as i32 - 1)).negative()?;
     let below = scaled.lt(&kth_value)?;
-    mlx_rs::ops::which(&below, Array::from(f32::NEG_INFINITY), scaled)
+    mlx::ops::which(&below, Array::from(f32::NEG_INFINITY), scaled)
 }
 
 /// nucleus (top-p) sampling。昇順ソート空間で累積確率が (1 - top_p) を超える
 /// 上位確率側だけを残して categorical し、添字を語彙 ID に引き直す (mlx-lm と同形)。
 fn sample_top_p(scaled: &Array, top_p: f32) -> Result<Array, Exception> {
-    let sorted_idx = mlx_rs::ops::argsort_axis(scaled, -1)?;
-    let sorted_logits = mlx_rs::ops::indexing::take_along_axis(scaled, &sorted_idx, -1)?;
-    let probs = mlx_rs::ops::softmax_axis(&sorted_logits, -1, None)?;
-    let cumulative = mlx_rs::ops::cumsum(&probs, -1, None, None)?;
+    let sorted_idx = mlx::ops::argsort_axis(scaled, -1)?;
+    let sorted_logits = mlx::ops::indexing::take_along_axis(scaled, &sorted_idx, -1)?;
+    let probs = mlx::ops::softmax_axis(&sorted_logits, -1, None)?;
+    let cumulative = mlx::ops::cumsum(&probs, -1, None, None)?;
     let keep = cumulative.gt(Array::from(1.0 - top_p))?;
-    let masked = mlx_rs::ops::which(&keep, &sorted_logits, Array::from(f32::NEG_INFINITY))?;
-    let sorted_token = mlx_rs::random::categorical(&masked, None, None, None)?;
+    let masked = mlx::ops::which(&keep, &sorted_logits, Array::from(f32::NEG_INFINITY))?;
+    let sorted_token = mlx::random::categorical(&masked, None, None, None)?;
     // categorical は末尾軸を潰した [1] を返すので、take_along_axis 用に [1, 1] へ戻す
     let sorted_token = sorted_token.reshape(&[1, 1])?;
-    let token = mlx_rs::ops::indexing::take_along_axis(&sorted_idx, &sorted_token, -1)?;
+    let token = mlx::ops::indexing::take_along_axis(&sorted_idx, &sorted_token, -1)?;
     token.reshape(&[1])
 }
 
@@ -186,12 +185,14 @@ mod tests {
 
         // 平坦な logits でも同一 seed なら同一系列になる (global stream を使用)
         let flat = Array::from_slice(&[0.0f32; 16], &[1, 1, 16]);
-        mlx_rs::random::seed(42).unwrap();
-        let first: Vec<i32> =
-            (0..4).map(|_| sample_token(&flat, &params(1.0)).unwrap()).collect();
-        mlx_rs::random::seed(42).unwrap();
-        let second: Vec<i32> =
-            (0..4).map(|_| sample_token(&flat, &params(1.0)).unwrap()).collect();
+        mlx::random::seed(42).unwrap();
+        let first: Vec<i32> = (0..4)
+            .map(|_| sample_token(&flat, &params(1.0)).unwrap())
+            .collect();
+        mlx::random::seed(42).unwrap();
+        let second: Vec<i32> = (0..4)
+            .map(|_| sample_token(&flat, &params(1.0)).unwrap())
+            .collect();
         assert_eq!(first, second);
     }
 

@@ -1,5 +1,6 @@
-use anyhow::{bail, Result};
-use mlx_rs::Array;
+use anyhow::{Result, bail};
+use mlx::Array;
+use mlx_rs as mlx;
 
 use crate::config::{ProcessorConfig, THW, VisionConfiguration};
 
@@ -84,7 +85,7 @@ pub fn preprocess_image(
 
     // Temporal padding: repeat frame to match temporal_patch_size
     let padded = if 1 < temporal_patch {
-        mlx_rs::ops::tile(&array, &[temporal_patch, 1, 1, 1])?
+        mlx::ops::tile(&array, &[temporal_patch, 1, 1, 1])?
     } else {
         array
     };
@@ -104,10 +105,7 @@ pub fn preprocess_image(
     Ok((patches, thw))
 }
 
-pub fn patchify(
-    frames: &Array,
-    config: &VisionConfiguration,
-) -> Result<Array> {
+pub fn patchify(frames: &Array, config: &VisionConfiguration) -> Result<Array> {
     let ps = config.patch_size;
     let tp = config.temporal_patch_size;
     let c = config.in_channels;

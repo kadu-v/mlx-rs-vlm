@@ -1,13 +1,12 @@
-use mlx_rs::error::Exception;
-use mlx_rs::fast::{scaled_dot_product_attention, ScaledDotProductAttentionMask};
-use mlx_rs::macros::ModuleParameters;
-use mlx_rs::module::Module;
-use mlx_rs::nn::Linear;
-use mlx_rs::ops::{
-    concatenate_axis, cos, expand_dims, negative, sin, split,
-};
-use mlx_rs::ops::indexing::IndexOp;
-use mlx_rs::Array;
+use mlx::Array;
+use mlx::error::Exception;
+use mlx::fast::{ScaledDotProductAttentionMask, scaled_dot_product_attention};
+use mlx::macros::ModuleParameters;
+use mlx::module::Module;
+use mlx::nn::Linear;
+use mlx::ops::indexing::IndexOp;
+use mlx::ops::{concatenate_axis, cos, expand_dims, negative, sin, split};
+use mlx_rs as mlx;
 
 use crate::config::VisionConfiguration;
 
@@ -35,11 +34,11 @@ fn apply_rotary(tensor: &Array, freqs: &Array) -> Result<Array, Exception> {
     // Expand dims and tile to match tensor shape:
     // [seq_len, dim/2] -> [seq_len, 1, dim/2] -> [seq_len, 1, dim] -> [1, seq_len, 1, dim]
     cos_vals = expand_dims(&cos_vals, 1)?;
-    cos_vals = mlx_rs::ops::tile(&cos_vals, &[1, 1, 2])?;
+    cos_vals = mlx::ops::tile(&cos_vals, &[1, 1, 2])?;
     cos_vals = expand_dims(&cos_vals, 0)?;
 
     sin_vals = expand_dims(&sin_vals, 1)?;
-    sin_vals = mlx_rs::ops::tile(&sin_vals, &[1, 1, 2])?;
+    sin_vals = mlx::ops::tile(&sin_vals, &[1, 1, 2])?;
     sin_vals = expand_dims(&sin_vals, 0)?;
 
     // rotated = tensor * cos + rotate_half(tensor) * sin
@@ -54,7 +53,7 @@ fn apply_rotary(tensor: &Array, freqs: &Array) -> Result<Array, Exception> {
 /// each image (block defined by cumulative sequence lengths) independently
 /// with the fused SDPA kernel — no dense mask is materialized.
 #[derive(Debug, Clone, ModuleParameters)]
-#[module(root = mlx_rs)]
+#[module(root = mlx)]
 pub struct VisionAttention {
     pub num_heads: i32,
     pub head_dim: i32,
@@ -124,10 +123,9 @@ impl VisionAttention {
         let keys = apply_rotary(&keys, rot_pos_emb)?;
 
         // Reshape for scaled_dot_product_attention: [1, num_heads, seq_len, head_dim]
-        let queries =
-            queries
-                .reshape(&[1, seq_len, self.num_heads, self.head_dim])?
-                .transpose_axes(&[0, 2, 1, 3])?;
+        let queries = queries
+            .reshape(&[1, seq_len, self.num_heads, self.head_dim])?
+            .transpose_axes(&[0, 2, 1, 3])?;
         let keys = keys
             .reshape(&[1, seq_len, self.num_heads, self.head_dim])?
             .transpose_axes(&[0, 2, 1, 3])?;
@@ -206,9 +204,9 @@ fn fused_sdpa(
 
     let widths = [(0, 0), (0, 0), (0, 0), (0, target - head_dim)];
     let attended = scaled_dot_product_attention(
-        mlx_rs::ops::pad(queries, &widths[..], None::<Array>, None)?,
-        mlx_rs::ops::pad(keys, &widths[..], None::<Array>, None)?,
-        mlx_rs::ops::pad(values, &widths[..], None::<Array>, None)?,
+        mlx::ops::pad(queries, &widths[..], None::<Array>, None)?,
+        mlx::ops::pad(keys, &widths[..], None::<Array>, None)?,
+        mlx::ops::pad(values, &widths[..], None::<Array>, None)?,
         scale,
         None::<ScaledDotProductAttentionMask>,
         None::<&Array>,

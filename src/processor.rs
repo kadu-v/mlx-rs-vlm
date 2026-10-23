@@ -1,7 +1,8 @@
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use mlx_rs::Array;
+use mlx::Array;
+use mlx_rs as mlx;
 
 use crate::chat::{Message, TemplateOptions};
 use crate::config::{
@@ -80,7 +81,11 @@ impl Qwen35Processor {
     }
 
     /// chat template 適用 → encode → 画像トークン展開 → テンソル化。
-    pub fn prepare(&self, messages: &[Message], images: &[image::DynamicImage]) -> Result<PreparedInput> {
+    pub fn prepare(
+        &self,
+        messages: &[Message],
+        images: &[image::DynamicImage],
+    ) -> Result<PreparedInput> {
         self.prepare_with_options(messages, images, &TemplateOptions::default())
     }
 
@@ -103,7 +108,11 @@ impl Qwen35Processor {
 
     /// chat template を通さない生プロンプト版。画像 1 枚につき
     /// `<|vision_start|><|image_pad|><|vision_end|>` を 1 組含めること。
-    pub fn prepare_prompt(&self, prompt: &str, images: &[image::DynamicImage]) -> Result<PreparedInput> {
+    pub fn prepare_prompt(
+        &self,
+        prompt: &str,
+        images: &[image::DynamicImage],
+    ) -> Result<PreparedInput> {
         let mut pixel_arrays = Vec::with_capacity(images.len());
         let mut grid_thw = Vec::with_capacity(images.len());
         for img in images {
@@ -138,7 +147,7 @@ impl Qwen35Processor {
             _ => {
                 let refs: Vec<&Array> = pixel_arrays.iter().collect();
                 Some(
-                    mlx_rs::ops::concatenate_axis(&refs, 0)
+                    mlx::ops::concatenate_axis(&refs, 0)
                         .map_err(|e| anyhow::anyhow!("Failed to concatenate pixel values: {e}"))?,
                 )
             }

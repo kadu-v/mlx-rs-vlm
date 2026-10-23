@@ -4,19 +4,20 @@ pub mod patch_embed;
 pub mod patch_merger;
 pub mod rope;
 
-use mlx_rs::builder::Builder;
-use mlx_rs::error::Exception;
-use mlx_rs::macros::ModuleParameters;
-use mlx_rs::module::Module;
-use mlx_rs::nn::{Embedding, LayerNorm};
-use mlx_rs::ops::{
-    arange, broadcast_to, concatenate_axis, cumsum, expand_dims, linspace, minimum, pad,
-    stack_axis, tile, LinspaceOptions,
+use mlx::Array;
+use mlx::builder::Builder;
+use mlx::error::Exception;
+use mlx::macros::ModuleParameters;
+use mlx::module::Module;
+use mlx::nn::{Embedding, LayerNorm};
+use mlx::ops::indexing::IndexOp;
+use mlx::ops::{
+    LinspaceOptions, arange, broadcast_to, concatenate_axis, cumsum, expand_dims, linspace,
+    minimum, pad, stack_axis, tile,
 };
-use mlx_rs::ops::indexing::IndexOp;
-use mlx_rs::Array;
+use mlx_rs as mlx;
 
-use crate::config::{VisionConfiguration, THW};
+use crate::config::{THW, VisionConfiguration};
 
 use self::attention::VisionAttention;
 use self::mlp::VisionMlp;
@@ -30,7 +31,7 @@ use self::rope::VisionRotaryEmbedding;
 /// x = x + attn(norm1(x))
 /// x = x + mlp(norm2(x))
 #[derive(Debug, Clone, ModuleParameters)]
-#[module(root = mlx_rs)]
+#[module(root = mlx)]
 pub struct VisionBlock {
     #[param]
     pub norm1: LayerNorm,
@@ -48,10 +49,10 @@ pub struct VisionBlock {
 impl VisionBlock {
     /// Create a new VisionBlock from configuration.
     pub fn new(config: &VisionConfiguration) -> Result<Self, Exception> {
-        let norm1 = mlx_rs::nn::LayerNormBuilder::new(config.hidden_size)
+        let norm1 = mlx::nn::LayerNormBuilder::new(config.hidden_size)
             .eps(1e-6)
             .build()?;
-        let norm2 = mlx_rs::nn::LayerNormBuilder::new(config.hidden_size)
+        let norm2 = mlx::nn::LayerNormBuilder::new(config.hidden_size)
             .eps(1e-6)
             .build()?;
         let attn = VisionAttention::new(config)?;
@@ -98,7 +99,7 @@ impl VisionBlock {
 /// Combines patch embedding, positional embeddings, transformer blocks,
 /// rotary position embeddings, and a patch merger for spatial downsampling.
 #[derive(Debug, Clone, ModuleParameters)]
-#[module(root = mlx_rs)]
+#[module(root = mlx)]
 pub struct VisionModel {
     #[param]
     pub patch_embed: PatchEmbed,
@@ -127,8 +128,7 @@ impl VisionModel {
         let head_dim = config.hidden_size / config.num_heads;
         let rotary_embedding = VisionRotaryEmbedding::new(head_dim / 2, 10000.0);
 
-        let pos_embed =
-            Embedding::new(config.num_position_embeddings, config.hidden_size)?;
+        let pos_embed = Embedding::new(config.num_position_embeddings, config.hidden_size)?;
 
         let blocks = (0..config.depth)
             .map(|_| VisionBlock::new(config))
@@ -136,8 +136,7 @@ impl VisionModel {
 
         let merger = PatchMerger::new(config, false)?;
 
-        let num_grid_per_side =
-            (config.num_position_embeddings as f64).sqrt() as i32;
+        let num_grid_per_side = (config.num_position_embeddings as f64).sqrt() as i32;
 
         Ok(Self {
             patch_embed,
@@ -159,7 +158,7 @@ impl VisionModel {
     fn rotary_position_embedding(&self, grids: &[THW]) -> Result<Array, Exception> {
         let max_hw = grids.iter().map(|g| g.h.max(g.w)).max().unwrap_or(0);
         if max_hw == 0 {
-            return mlx_rs::ops::zeros::<f32>(&[1, 1]);
+            return mlx::ops::zeros::<f32>(&[1, 1]);
         }
 
         let freq_table = self.rotary_embedding.forward(max_hw)?;
@@ -177,10 +176,10 @@ impl VisionModel {
             }
 
             // Generate block and intra-block indices
-            let block_rows = arange::<_, i32>(None, merged_h, None)?
-                .reshape(&[merged_h, 1, 1, 1])?;
-            let block_cols = arange::<_, i32>(None, merged_w, None)?
-                .reshape(&[1, merged_w, 1, 1])?;
+            let block_rows =
+                arange::<_, i32>(None, merged_h, None)?.reshape(&[merged_h, 1, 1, 1])?;
+            let block_cols =
+                arange::<_, i32>(None, merged_w, None)?.reshape(&[1, merged_w, 1, 1])?;
 
             let intra = arange::<_, i32>(None, merge, None)?;
             let intra_row = intra.reshape(&[1, 1, merge, 1])?;
@@ -212,7 +211,7 @@ impl VisionModel {
         }
 
         if all_coords.is_empty() {
-            return mlx_rs::ops::zeros::<f32>(&[0, half_dim * 2]);
+            return mlx::ops::zeros::<f32>(&[0, half_dim * 2]);
         }
 
         // Concatenate all coordinates: [total_patches, 2]
@@ -251,19 +250,35 @@ impl VisionModel {
 
             // Create linspace indices
             let h_linspace = linspace::<f32, f32>(
-                0.0, max_index as f32, LinspaceOptions { count: h, endpoint: true },
+                0.0,
+                max_index as f32,
+                LinspaceOptions {
+                    count: h,
+                    endpoint: true,
+                },
             )?;
             let w_linspace = linspace::<f32, f32>(
-                0.0, max_index as f32, LinspaceOptions { count: w, endpoint: true },
+                0.0,
+                max_index as f32,
+                LinspaceOptions {
+                    count: w,
+                    endpoint: true,
+                },
             )?;
 
             // Floor and ceil
             let h_floor = h_linspace.as_type::<i32>()?;
-            let h_ceil = minimum(&(&h_floor + &Array::from_int(1)), &Array::from_int(max_index))?;
+            let h_ceil = minimum(
+                &(&h_floor + &Array::from_int(1)),
+                &Array::from_int(max_index),
+            )?;
             let dh = &h_linspace - &h_floor.as_type::<f32>()?;
 
             let w_floor = w_linspace.as_type::<i32>()?;
-            let w_ceil = minimum(&(&w_floor + &Array::from_int(1)), &Array::from_int(max_index))?;
+            let w_ceil = minimum(
+                &(&w_floor + &Array::from_int(1)),
+                &Array::from_int(max_index),
+            )?;
             let dw = &w_linspace - &w_floor.as_type::<f32>()?;
 
             // Broadcast to create meshgrid
@@ -287,22 +302,14 @@ impl VisionModel {
             let dw_exp = expand_dims(&dw, 0)?;
             let one = Array::from_f32(1.0);
 
-            corner_weights[0].push(
-                ((&one - &dh_exp) * &(&one - &dw_exp)).flatten(None, None)?
-            );
-            corner_weights[1].push(
-                ((&one - &dh_exp) * &dw_exp).flatten(None, None)?
-            );
-            corner_weights[2].push(
-                (&dh_exp * &(&one - &dw_exp)).flatten(None, None)?
-            );
-            corner_weights[3].push(
-                (&dh_exp * &dw_exp).flatten(None, None)?
-            );
+            corner_weights[0].push(((&one - &dh_exp) * &(&one - &dw_exp)).flatten(None, None)?);
+            corner_weights[1].push(((&one - &dh_exp) * &dw_exp).flatten(None, None)?);
+            corner_weights[2].push((&dh_exp * &(&one - &dw_exp)).flatten(None, None)?);
+            corner_weights[3].push((&dh_exp * &dw_exp).flatten(None, None)?);
         }
 
         if corner_indices[0].is_empty() {
-            return mlx_rs::ops::zeros::<f32>(&[0, hidden_size]);
+            return mlx::ops::zeros::<f32>(&[0, hidden_size]);
         }
 
         // Step 2: Batch embedding lookup
@@ -324,13 +331,11 @@ impl VisionModel {
             .collect();
 
         let total_patches = indices_tensors[0].dim(0);
-        let mut patch_pos_embeds =
-            mlx_rs::ops::zeros::<f32>(&[total_patches, hidden_size])?;
+        let mut patch_pos_embeds = mlx::ops::zeros::<f32>(&[total_patches, hidden_size])?;
 
         for corner_idx in 0..4 {
             let corner_embeds = self.pos_embed.forward(&indices_tensors[corner_idx])?;
-            let weighted =
-                &corner_embeds * &expand_dims(&weights_tensors[corner_idx], -1)?;
+            let weighted = &corner_embeds * &expand_dims(&weights_tensors[corner_idx], -1)?;
             patch_pos_embeds = &patch_pos_embeds + &weighted;
         }
 
@@ -356,14 +361,8 @@ impl VisionModel {
             // [t*h*w, feat] -> [t, h, w, feat] -> [t, h/merge, merge, w/merge, merge, feat]
             // -> transpose(0, 1, 3, 2, 4, 5) -> flatten to [-1, feat]
             temporal_embeds = temporal_embeds.reshape(&[t, h, w, feature_dim])?;
-            temporal_embeds = temporal_embeds.reshape(&[
-                t,
-                h / merge,
-                merge,
-                w / merge,
-                merge,
-                feature_dim,
-            ])?;
+            temporal_embeds =
+                temporal_embeds.reshape(&[t, h / merge, merge, w / merge, merge, feature_dim])?;
             temporal_embeds = temporal_embeds.transpose_axes(&[0, 1, 3, 2, 4, 5])?;
             temporal_embeds = temporal_embeds.reshape(&[-1, feature_dim])?;
 
@@ -397,12 +396,7 @@ impl VisionModel {
         let cum_sum = cumsum(&concat_lengths, None, None, None)?;
 
         // Pad with leading zero
-        pad(
-            &cum_sum,
-            &[(1, 0)],
-            None::<Array>,
-            None,
-        )
+        pad(&cum_sum, &[(1, 0)], None::<Array>, None)
     }
 
     /// Forward pass of the vision model.
@@ -432,8 +426,7 @@ impl VisionModel {
         // 4. Transformer blocks
         let deepstack_outputs: Vec<Array> = Vec::new();
         for block in self.blocks.iter_mut() {
-            hidden_states =
-                block.forward_with_rope(&hidden_states, &cu_seqlens, &rotary_embeds)?;
+            hidden_states = block.forward_with_rope(&hidden_states, &cu_seqlens, &rotary_embeds)?;
         }
 
         // 5. Patch merger

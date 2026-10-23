@@ -1,23 +1,25 @@
-use mlx_rs_vlm::chat::Message;
-use mlx_rs_vlm::config::Qwen35Configuration;
-use mlx_rs_vlm::generate::{GenerateParams, generate};
-use mlx_rs_vlm::hub::download_model;
-use mlx_rs_vlm::model::Qwen35VLM;
-use mlx_rs_vlm::processor::Qwen35Processor;
-use mlx_rs_vlm::weights::{load_model, load_weights, sanitize_weights};
+use mlx_rs as mlx;
+use mlx_rs_vlm as mlx_vlm;
+use mlx_vlm::chat::Message;
+use mlx_vlm::config::Qwen35Configuration;
+use mlx_vlm::generate::{GenerateParams, generate};
+use mlx_vlm::hub::download_model;
+use mlx_vlm::model::Qwen35VLM;
+use mlx_vlm::processor::Qwen35Processor;
+use mlx_vlm::weights::{load_model, load_weights, sanitize_weights};
 
 const REPO_2B: &str = "mlx-community/Qwen3.5-2B-MLX-8bit";
 const REPO_08B: &str = "mlx-community/Qwen3.5-0.8B-MLX-8bit";
 
 fn resolve_model_dir(repo_id: &str) -> std::path::PathBuf {
     let env_key = match repo_id {
-        REPO_2B => "MLX_RS_VLM_MODEL_DIR_2B",
-        REPO_08B => "MLX_RS_VLM_MODEL_DIR_08B",
-        _ => "MLX_RS_VLM_MODEL_DIR",
+        REPO_2B => "mlx_VLM_MODEL_DIR_2B",
+        REPO_08B => "mlx_VLM_MODEL_DIR_08B",
+        _ => "mlx_VLM_MODEL_DIR",
     };
     if let Ok(dir) = std::env::var(env_key) {
         std::path::PathBuf::from(dir)
-    } else if let Ok(dir) = std::env::var("MLX_RS_VLM_MODEL_DIR") {
+    } else if let Ok(dir) = std::env::var("mlx_VLM_MODEL_DIR") {
         std::path::PathBuf::from(dir)
     } else {
         download_model(repo_id, None).unwrap()
@@ -26,8 +28,8 @@ fn resolve_model_dir(repo_id: &str) -> std::path::PathBuf {
 
 mod sanitize {
     use super::*;
-    use mlx_rs::Array;
-    use mlx_rs::module::ModuleParameters;
+    use mlx::Array;
+    use mlx::module::ModuleParameters;
     use std::collections::{HashMap, HashSet};
 
     #[test]
@@ -35,37 +37,79 @@ mod sanitize {
         let mut weights = HashMap::new();
 
         // HF-style language_model.model.* → language_model.*
-        weights.insert("language_model.model.layers.0.self_attn.q_proj.weight".into(), Array::zeros::<u32>(&[4096, 512]).unwrap());
-        weights.insert("language_model.model.layers.0.self_attn.q_proj.scales".into(), Array::zeros::<f32>(&[4096, 32]).unwrap());
-        weights.insert("language_model.model.layers.0.self_attn.q_proj.biases".into(), Array::zeros::<f32>(&[4096, 32]).unwrap());
-        weights.insert("language_model.model.layers.0.self_attn.k_proj.weight".into(), Array::zeros::<f32>(&[512, 2048]).unwrap());
-        weights.insert("language_model.model.layers.0.mlp.gate_proj.weight".into(), Array::zeros::<u32>(&[6144, 256]).unwrap());
-        weights.insert("language_model.model.layers.0.mlp.gate_proj.scales".into(), Array::zeros::<f32>(&[6144, 64]).unwrap());
-        weights.insert("language_model.model.layers.0.mlp.gate_proj.biases".into(), Array::zeros::<f32>(&[6144, 64]).unwrap());
+        weights.insert(
+            "language_model.model.layers.0.self_attn.q_proj.weight".into(),
+            Array::zeros::<u32>(&[4096, 512]).unwrap(),
+        );
+        weights.insert(
+            "language_model.model.layers.0.self_attn.q_proj.scales".into(),
+            Array::zeros::<f32>(&[4096, 32]).unwrap(),
+        );
+        weights.insert(
+            "language_model.model.layers.0.self_attn.q_proj.biases".into(),
+            Array::zeros::<f32>(&[4096, 32]).unwrap(),
+        );
+        weights.insert(
+            "language_model.model.layers.0.self_attn.k_proj.weight".into(),
+            Array::zeros::<f32>(&[512, 2048]).unwrap(),
+        );
+        weights.insert(
+            "language_model.model.layers.0.mlp.gate_proj.weight".into(),
+            Array::zeros::<u32>(&[6144, 256]).unwrap(),
+        );
+        weights.insert(
+            "language_model.model.layers.0.mlp.gate_proj.scales".into(),
+            Array::zeros::<f32>(&[6144, 64]).unwrap(),
+        );
+        weights.insert(
+            "language_model.model.layers.0.mlp.gate_proj.biases".into(),
+            Array::zeros::<f32>(&[6144, 64]).unwrap(),
+        );
 
         // model.visual.* → vision_tower.*
-        weights.insert("model.visual.blocks.0.attn.qkv.weight".into(), Array::zeros::<f32>(&[3072, 1024]).unwrap());
+        weights.insert(
+            "model.visual.blocks.0.attn.qkv.weight".into(),
+            Array::zeros::<f32>(&[3072, 1024]).unwrap(),
+        );
 
         // embed_tokens (tied → lm_head dropped)
-        weights.insert("language_model.model.embed_tokens.weight".into(), Array::zeros::<f32>(&[248320, 2048]).unwrap());
-        weights.insert("lm_head.weight".into(), Array::zeros::<f32>(&[248320, 2048]).unwrap());
+        weights.insert(
+            "language_model.model.embed_tokens.weight".into(),
+            Array::zeros::<f32>(&[248320, 2048]).unwrap(),
+        );
+        weights.insert(
+            "lm_head.weight".into(),
+            Array::zeros::<f32>(&[248320, 2048]).unwrap(),
+        );
 
         // A_log → a_log
-        weights.insert("language_model.model.layers.0.linear_attn.A_log".into(), Array::zeros::<f32>(&[16]).unwrap());
+        weights.insert(
+            "language_model.model.layers.0.linear_attn.A_log".into(),
+            Array::zeros::<f32>(&[16]).unwrap(),
+        );
 
         // mtp.* → filtered out
         weights.insert("mtp.layer.weight".into(), Array::from(1.0f32));
 
         // norm weights (HF: +1.0 adjustment)
-        weights.insert("language_model.model.layers.0.input_layernorm.weight".into(), Array::zeros::<f32>(&[2048]).unwrap());
-        weights.insert("language_model.model.norm.weight".into(), Array::zeros::<f32>(&[2048]).unwrap());
+        weights.insert(
+            "language_model.model.layers.0.input_layernorm.weight".into(),
+            Array::zeros::<f32>(&[2048]).unwrap(),
+        );
+        weights.insert(
+            "language_model.model.norm.weight".into(),
+            Array::zeros::<f32>(&[2048]).unwrap(),
+        );
 
-        let config: Qwen35Configuration = serde_json::from_str(r#"{
+        let config: Qwen35Configuration = serde_json::from_str(
+            r#"{
             "model_type": "qwen3_5_vl",
             "text_config": { "tie_word_embeddings": true },
             "vision_config": {},
             "quantization": { "group_size": 64, "bits": 8 }
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
 
         let result = sanitize_weights(weights, &config, false).unwrap();
         let keys: HashSet<String> = result.weights.keys().cloned().collect();
@@ -91,14 +135,24 @@ mod sanitize {
 
         // quantization info
         let qi = result.quant_info.as_ref().unwrap();
-        assert!(qi.for_path("language_model.layers.0.self_attn.q_proj").is_some());
-        assert!(qi.for_path("language_model.layers.0.mlp.gate_proj").is_some());
-        assert!(qi.for_path("language_model.layers.0.self_attn.k_proj").is_none());
+        assert!(
+            qi.for_path("language_model.layers.0.self_attn.q_proj")
+                .is_some()
+        );
+        assert!(
+            qi.for_path("language_model.layers.0.mlp.gate_proj")
+                .is_some()
+        );
+        assert!(
+            qi.for_path("language_model.layers.0.self_attn.k_proj")
+                .is_none()
+        );
     }
 
     #[test]
     fn test_model_construction_from_config() {
-        let config: Qwen35Configuration = serde_json::from_str(r#"{
+        let config: Qwen35Configuration = serde_json::from_str(
+            r#"{
             "model_type": "qwen3_5_vl",
             "text_config": {
                 "hidden_size": 2048,
@@ -112,21 +166,31 @@ mod sanitize {
             },
             "vision_config": {},
             "quantization": { "group_size": 64, "bits": 8 }
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
 
         let mut model = Qwen35VLM::new(&config, None).unwrap();
         let params = model.parameters().flatten();
         assert!(!params.is_empty(), "Model should have parameters");
 
-        assert!(params.keys().any(|k| k.contains("language_model.layers.0.")));
-        assert!(params.keys().any(|k| k.contains("language_model.layers.3.")));
+        assert!(
+            params
+                .keys()
+                .any(|k| k.contains("language_model.layers.0."))
+        );
+        assert!(
+            params
+                .keys()
+                .any(|k| k.contains("language_model.layers.3."))
+        );
         assert!(params.keys().any(|k| k.contains("embed_tokens")));
         assert!(params.keys().any(|k| k.contains("language_model.norm")));
         assert!(params.keys().any(|k| k.contains("vision_tower")));
 
         let mut dummy_weights: HashMap<String, Array> = HashMap::new();
         for (key, value) in params.iter() {
-            let zeros = mlx_rs::ops::zeros_like_device(value, mlx_rs::StreamOrDevice::default()).unwrap();
+            let zeros = mlx::ops::zeros_like_device(value, mlx::StreamOrDevice::default()).unwrap();
             dummy_weights.insert(key.to_string(), zeros);
         }
         model.load_weights(dummy_weights).unwrap();
@@ -135,7 +199,7 @@ mod sanitize {
 
 mod weights {
     use super::*;
-    use mlx_rs::module::ModuleParameters;
+    use mlx::module::ModuleParameters;
 
     /// Requires model download. Run with: cargo test --test test_qwen35 -- --ignored
     #[test]
@@ -239,12 +303,12 @@ mod text_generation {
         let (mut model, config) = load_model(&model_dir).unwrap();
 
         // encode だけは HfTokenizer を借りるが、プロンプト構築・テンソル化は手動
-        use mlx_rs_vlm::tokenizer::{HfTokenizer, Tokenizer as _};
+        use mlx_vlm::tokenizer::{HfTokenizer, Tokenizer as _};
         let tokenizer = HfTokenizer::from_model_dir(&model_dir).unwrap();
 
         let prompt = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nHello!<|im_end|>\n<|im_start|>assistant\n";
         let input_ids = tokenizer.encode(prompt, false).unwrap();
-        let input_array = mlx_rs::Array::from_slice(&input_ids, &[1, input_ids.len() as i32]);
+        let input_array = mlx::Array::from_slice(&input_ids, &[1, input_ids.len() as i32]);
 
         let params = GenerateParams {
             max_tokens: 32,
@@ -284,7 +348,9 @@ mod image_generation {
             Message::system("You are a helpful assistant."),
             Message::user_with_image("Describe this image."),
         ];
-        let input = processor.prepare(&messages, &[create_test_image()]).unwrap();
+        let input = processor
+            .prepare(&messages, &[create_test_image()])
+            .unwrap();
 
         let params = GenerateParams {
             max_tokens: 64,
@@ -324,7 +390,7 @@ mod image_generation {
     #[test]
     #[ignore]
     fn test_image_two_images_2b() {
-        use mlx_rs_vlm::chat::{ContentPart, Role};
+        use mlx_vlm::chat::{ContentPart, Role};
 
         let model_dir = resolve_model_dir(REPO_2B);
         let (mut model, _config) = load_model(&model_dir).unwrap();

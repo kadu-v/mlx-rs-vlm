@@ -1,6 +1,7 @@
-use mlx_rs::error::Exception;
-use mlx_rs::ops::{arange, outer, power};
-use mlx_rs::Array;
+use mlx::Array;
+use mlx::error::Exception;
+use mlx::ops::{arange, outer, power};
+use mlx_rs as mlx;
 
 /// Vision rotary embedding.
 ///

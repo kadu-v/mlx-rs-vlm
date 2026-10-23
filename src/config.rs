@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Context;
+use mlx_rs as mlx;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -53,8 +54,7 @@ impl Qwen35Configuration {
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
         let json = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
-        serde_json::from_str(&json)
-            .with_context(|| format!("Failed to parse {}", path.display()))
+        serde_json::from_str(&json).with_context(|| format!("Failed to parse {}", path.display()))
     }
 
     pub fn image_token_index(&self) -> i32 {
@@ -70,15 +70,27 @@ impl Qwen35Configuration {
         self.eos_token_id.clone().map(|v| v.into_vec())
     }
     pub fn quantization_params(&self) -> Option<&QuantizationConfig> {
-        self.quantization.as_ref().or(self.quantization_config.as_ref())
+        self.quantization
+            .as_ref()
+            .or(self.quantization_config.as_ref())
     }
 }
 
-fn default_ignore_index() -> i32 { -100 }
-fn default_image_token_id() -> i32 { 248056 }
-fn default_video_token_id() -> i32 { 248057 }
-fn default_vision_start_token_id() -> i32 { 248045 }
-fn default_vision_end_token_id() -> i32 { 248046 }
+fn default_ignore_index() -> i32 {
+    -100
+}
+fn default_image_token_id() -> i32 {
+    248056
+}
+fn default_video_token_id() -> i32 {
+    248057
+}
+fn default_vision_start_token_id() -> i32 {
+    248045
+}
+fn default_vision_end_token_id() -> i32 {
+    248046
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TextConfiguration {
@@ -123,32 +135,69 @@ pub struct TextConfiguration {
     pub num_experts: Option<i32>,
 }
 
-fn default_hidden_size() -> i32 { 4096 }
-fn default_num_hidden_layers() -> i32 { 32 }
-fn default_num_attention_heads() -> i32 { 32 }
-fn default_num_key_value_heads() -> i32 { 8 }
-fn default_intermediate_size() -> i32 { 14336 }
-fn default_vocab_size() -> i32 { 248320 }
-fn default_rms_norm_eps() -> f32 { 1e-6 }
-fn default_partial_rotary_factor() -> f32 { 0.25 }
-fn default_max_position_embeddings() -> i32 { 131072 }
-fn default_full_attention_interval() -> i32 { 4 }
-fn default_linear_conv_kernel_dim() -> i32 { 4 }
-fn default_linear_key_head_dim() -> i32 { 192 }
-fn default_linear_value_head_dim() -> i32 { 128 }
-fn default_linear_num_key_heads() -> i32 { 16 }
-fn default_linear_num_value_heads() -> i32 { 64 }
+fn default_hidden_size() -> i32 {
+    4096
+}
+fn default_num_hidden_layers() -> i32 {
+    32
+}
+fn default_num_attention_heads() -> i32 {
+    32
+}
+fn default_num_key_value_heads() -> i32 {
+    8
+}
+fn default_intermediate_size() -> i32 {
+    14336
+}
+fn default_vocab_size() -> i32 {
+    248320
+}
+fn default_rms_norm_eps() -> f32 {
+    1e-6
+}
+fn default_partial_rotary_factor() -> f32 {
+    0.25
+}
+fn default_max_position_embeddings() -> i32 {
+    131072
+}
+fn default_full_attention_interval() -> i32 {
+    4
+}
+fn default_linear_conv_kernel_dim() -> i32 {
+    4
+}
+fn default_linear_key_head_dim() -> i32 {
+    192
+}
+fn default_linear_value_head_dim() -> i32 {
+    128
+}
+fn default_linear_num_key_heads() -> i32 {
+    16
+}
+fn default_linear_num_value_heads() -> i32 {
+    64
+}
 
 impl TextConfiguration {
     pub fn head_dim(&self) -> i32 {
-        self.head_dim.unwrap_or(self.hidden_size / self.num_attention_heads)
+        self.head_dim
+            .unwrap_or(self.hidden_size / self.num_attention_heads)
     }
 
     pub fn mrope_section(&self) -> [i32; 3] {
         self.rope_parameters
             .as_ref()
             .and_then(|rp| rp.mrope_section.as_ref())
-            .and_then(|s| if s.len() >= 3 { Some([s[0], s[1], s[2]]) } else { None })
+            .and_then(|s| {
+                if s.len() >= 3 {
+                    Some([s[0], s[1], s[2]])
+                } else {
+                    None
+                }
+            })
             .unwrap_or([11, 11, 10])
     }
 
@@ -204,16 +253,36 @@ pub struct VisionConfiguration {
     pub hidden_act: Option<String>,
 }
 
-fn default_vision_depth() -> i32 { 24 }
-fn default_vision_hidden_size() -> i32 { 1024 }
-fn default_vision_num_heads() -> i32 { 16 }
-fn default_vision_intermediate_size() -> i32 { 4096 }
-fn default_vision_patch_size() -> i32 { 16 }
-fn default_vision_in_channels() -> i32 { 3 }
-fn default_vision_spatial_merge_size() -> i32 { 2 }
-fn default_vision_temporal_patch_size() -> i32 { 2 }
-fn default_vision_out_hidden_size() -> i32 { 2048 }
-fn default_vision_num_position_embeddings() -> i32 { 2304 }
+fn default_vision_depth() -> i32 {
+    24
+}
+fn default_vision_hidden_size() -> i32 {
+    1024
+}
+fn default_vision_num_heads() -> i32 {
+    16
+}
+fn default_vision_intermediate_size() -> i32 {
+    4096
+}
+fn default_vision_patch_size() -> i32 {
+    16
+}
+fn default_vision_in_channels() -> i32 {
+    3
+}
+fn default_vision_spatial_merge_size() -> i32 {
+    2
+}
+fn default_vision_temporal_patch_size() -> i32 {
+    2
+}
+fn default_vision_out_hidden_size() -> i32 {
+    2048
+}
+fn default_vision_num_position_embeddings() -> i32 {
+    2304
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct QuantizationConfig {
@@ -227,7 +296,9 @@ pub struct QuantizationConfig {
 
 pub const KNOWN_QUANT_KEYS: &[&str] = &["quant_method", "linear_class", "quantization_mode"];
 
-fn default_quant_mode() -> String { "affine".to_string() }
+fn default_quant_mode() -> String {
+    "affine".to_string()
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct THW {
@@ -248,10 +319,18 @@ pub struct ProcessorConfig {
     pub max_pixels: u32,
 }
 
-fn default_image_mean() -> Vec<f32> { vec![0.5, 0.5, 0.5] }
-fn default_image_std() -> Vec<f32> { vec![0.5, 0.5, 0.5] }
-fn default_min_pixels() -> u32 { 4 * 28 * 28 }
-fn default_max_pixels() -> u32 { 16384 * 28 * 28 }
+fn default_image_mean() -> Vec<f32> {
+    vec![0.5, 0.5, 0.5]
+}
+fn default_image_std() -> Vec<f32> {
+    vec![0.5, 0.5, 0.5]
+}
+fn default_min_pixels() -> u32 {
+    4 * 28 * 28
+}
+fn default_max_pixels() -> u32 {
+    16384 * 28 * 28
+}
 
 impl Default for ProcessorConfig {
     fn default() -> Self {
@@ -442,7 +521,7 @@ mod tests {
 
     #[test]
     fn test_load_processor_config_fallback() {
-        let dir = std::env::temp_dir().join("mlx_rs_vlm_test_proc_config");
+        let dir = std::env::temp_dir().join("mlx_vlm_test_proc_config");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 

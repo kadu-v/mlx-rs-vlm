@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use hf_hub::HFClientSync;
+use mlx_rs as mlx;
 
 pub fn download_model(repo_id: &str, revision: Option<&str>) -> Result<PathBuf> {
     let client = HFClientSync::new()?;

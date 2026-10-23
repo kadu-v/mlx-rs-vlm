@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use mlx_rs::Array;
+use mlx::Array;
+use mlx_rs as mlx;
 
 use crate::config::Qwen35Configuration;
 
@@ -93,7 +94,11 @@ pub fn load_weights(model_dir: &Path) -> Result<LoadedWeights> {
 
         // Swift reads metadata only from the first safetensor file.
         // We check all files for robustness — any file with format=mlx sets the flag.
-        if metadata.get("format").map(|f| f.eq_ignore_ascii_case("mlx")) == Some(true) {
+        if metadata
+            .get("format")
+            .map(|f| f.eq_ignore_ascii_case("mlx"))
+            == Some(true)
+        {
             is_mlx_format = true;
         }
 
@@ -116,8 +121,7 @@ pub fn sanitize_weights(
     config: &Qwen35Configuration,
     is_mlx_format: bool,
 ) -> Result<SanitizeResult> {
-    let (intermediate, all_scales_prefixes) =
-        adapt_keys_to_rust(weights, config, is_mlx_format)?;
+    let (intermediate, all_scales_prefixes) = adapt_keys_to_rust(weights, config, is_mlx_format)?;
 
     let (adapted, quant_info) = if !all_scales_prefixes.is_empty() {
         let q = config.quantization_params().ok_or_else(|| {
@@ -160,18 +164,30 @@ pub fn sanitize_weights(
                     if mode != "affine" {
                         anyhow::bail!(
                             "Unsupported quantization mode '{}' for layer '{}': only 'affine' is supported",
-                            mode, p
+                            mode,
+                            p
                         );
                     }
-                    let gs = obj.get("group_size").and_then(|v| v.as_i64())
-                        .ok_or_else(|| anyhow::anyhow!(
-                            "Per-layer quantization for '{}' is missing 'group_size'", p
-                        ))? as i32;
-                    let bits = obj.get("bits").and_then(|v| v.as_i64())
-                        .ok_or_else(|| anyhow::anyhow!(
-                            "Per-layer quantization for '{}' is missing 'bits'", p
-                        ))? as i32;
-                    layers.insert(p.clone(), QuantizationSpec { group_size: gs, bits, mode: QuantizationMode::Affine });
+                    let gs = obj
+                        .get("group_size")
+                        .and_then(|v| v.as_i64())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Per-layer quantization for '{}' is missing 'group_size'",
+                                p
+                            )
+                        })? as i32;
+                    let bits = obj.get("bits").and_then(|v| v.as_i64()).ok_or_else(|| {
+                        anyhow::anyhow!("Per-layer quantization for '{}' is missing 'bits'", p)
+                    })? as i32;
+                    layers.insert(
+                        p.clone(),
+                        QuantizationSpec {
+                            group_size: gs,
+                            bits,
+                            mode: QuantizationMode::Affine,
+                        },
+                    );
                 }
                 None | Some(serde_json::Value::Bool(true)) => {
                     layers.insert(p.clone(), default_spec);
@@ -179,7 +195,8 @@ pub fn sanitize_weights(
                 Some(other) => {
                     anyhow::bail!(
                         "Invalid per-layer quantization value for '{}': expected object or false, got {}",
-                        p, value_type_name(other)
+                        p,
+                        value_type_name(other)
                     );
                 }
             }
@@ -187,7 +204,11 @@ pub fn sanitize_weights(
 
         let effective_prefixes: Vec<String> = layers.keys().cloned().collect();
         let adapted = remap_quantized_keys(intermediate, &effective_prefixes);
-        let qi = if layers.is_empty() { None } else { Some(QuantizationInfo { layers }) };
+        let qi = if layers.is_empty() {
+            None
+        } else {
+            Some(QuantizationInfo { layers })
+        };
         (adapted, qi)
     } else {
         (intermediate, None)
@@ -215,13 +236,15 @@ fn sanitize_vision_weights(
             if value.ndim() == 5 && value.dim(-1) == in_channels {
                 result.insert(key, value);
             } else if value.ndim() == 5 {
-                let transposed = value.transpose_axes(&[0, 2, 3, 4, 1])
+                let transposed = value
+                    .transpose_axes(&[0, 2, 3, 4, 1])
                     .with_context(|| format!("Failed to transpose '{key}'"))?;
                 result.insert(key, transposed);
             } else {
                 anyhow::bail!(
                     "Unexpected shape for '{}': expected 5D tensor, got {}D",
-                    key, value.ndim()
+                    key,
+                    value.ndim()
                 );
             }
         } else {
@@ -411,12 +434,15 @@ mod tests {
             Array::zeros::<f32>(&[2048]).unwrap(),
         );
 
-        let config: Qwen35Configuration = serde_json::from_str(r#"{
+        let config: Qwen35Configuration = serde_json::from_str(
+            r#"{
             "model_type": "qwen3_5_vl",
             "text_config": { "tie_word_embeddings": true },
             "vision_config": {},
             "quantization": { "group_size": 64, "bits": 8 }
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
 
         let result = sanitize_weights(weights, &config, false).unwrap();
         let sanitized = &result.weights;
@@ -445,22 +471,29 @@ mod tests {
             .get("language_model.layers.0.input_layernorm.weight")
             .unwrap();
         let ln_mean: f32 = ln_w.mean(None).unwrap().item();
-        assert!((ln_mean - 1.0).abs() < 1e-5, "input_layernorm should be +1.0");
+        assert!(
+            (ln_mean - 1.0).abs() < 1e-5,
+            "input_layernorm should be +1.0"
+        );
 
         let pln_w = sanitized
             .get("language_model.layers.0.post_attention_layernorm.weight")
             .unwrap();
         let pln_mean: f32 = pln_w.mean(None).unwrap().item();
-        assert!((pln_mean - 1.0).abs() < 1e-5, "post_attention_layernorm should be +1.0");
+        assert!(
+            (pln_mean - 1.0).abs() < 1e-5,
+            "post_attention_layernorm should be +1.0"
+        );
 
         let final_norm = sanitized.get("language_model.norm.weight").unwrap();
         let fn_mean: f32 = final_norm.mean(None).unwrap().item();
         assert!((fn_mean - 1.0).abs() < 1e-5, "final norm should be +1.0");
 
         let qi = result.quant_info.as_ref().unwrap();
-        assert!(qi
-            .layers
-            .contains_key("language_model.layers.0.self_attn.q_proj"));
+        assert!(
+            qi.layers
+                .contains_key("language_model.layers.0.self_attn.q_proj")
+        );
         assert_eq!(qi.layers.len(), 1);
     }
 
@@ -485,29 +518,38 @@ mod tests {
             Array::zeros::<f32>(&[512, 2048]).unwrap(),
         );
 
-        let config: Qwen35Configuration = serde_json::from_str(r#"{
+        let config: Qwen35Configuration = serde_json::from_str(
+            r#"{
             "model_type": "qwen3_5_vl",
             "text_config": { "tie_word_embeddings": true },
             "vision_config": {},
             "quantization": { "group_size": 64, "bits": 8 }
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
 
         let result = sanitize_weights(weights, &config, true).unwrap();
         let qi = result.quant_info.as_ref().unwrap();
 
-        assert!(qi
-            .layers
-            .contains_key("language_model.layers.0.self_attn.q_proj"));
-        assert!(!qi
-            .layers
-            .contains_key("language_model.layers.0.self_attn.k_proj"));
+        assert!(
+            qi.layers
+                .contains_key("language_model.layers.0.self_attn.q_proj")
+        );
+        assert!(
+            !qi.layers
+                .contains_key("language_model.layers.0.self_attn.k_proj")
+        );
 
-        assert!(result
-            .weights
-            .contains_key("language_model.layers.0.self_attn.q_proj.inner.weight"));
-        assert!(result
-            .weights
-            .contains_key("language_model.layers.0.self_attn.k_proj.weight"));
+        assert!(
+            result
+                .weights
+                .contains_key("language_model.layers.0.self_attn.q_proj.inner.weight")
+        );
+        assert!(
+            result
+                .weights
+                .contains_key("language_model.layers.0.self_attn.k_proj.weight")
+        );
     }
 
     #[test]
@@ -548,7 +590,10 @@ mod tests {
         let result = sanitize_weights(weights, &config, true);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("symmetric"), "error should mention the mode: {err}");
+        assert!(
+            err.contains("symmetric"),
+            "error should mention the mode: {err}"
+        );
     }
 
     #[test]
@@ -586,7 +631,10 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("skip"), "error should mention skip: {err}");
-        assert!(err.contains("embed_tokens"), "error should mention layer: {err}");
+        assert!(
+            err.contains("embed_tokens"),
+            "error should mention layer: {err}"
+        );
     }
 
     #[test]
@@ -623,11 +671,17 @@ mod tests {
         let result = sanitize_weights(weights, &config, true).unwrap();
         let qi = result.quant_info.as_ref().unwrap();
 
-        let q_proj = qi.layers.get("language_model.layers.0.self_attn.q_proj").unwrap();
+        let q_proj = qi
+            .layers
+            .get("language_model.layers.0.self_attn.q_proj")
+            .unwrap();
         assert_eq!(q_proj.group_size, 64);
         assert_eq!(q_proj.bits, 8);
 
-        let gate = qi.layers.get("language_model.layers.0.mlp.gate_proj").unwrap();
+        let gate = qi
+            .layers
+            .get("language_model.layers.0.mlp.gate_proj")
+            .unwrap();
         assert_eq!(gate.group_size, 32);
         assert_eq!(gate.bits, 4);
     }
@@ -658,7 +712,10 @@ mod tests {
         let result = sanitize_weights(weights, &config, true);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("symmetric"), "error should mention mode: {err}");
+        assert!(
+            err.contains("symmetric"),
+            "error should mention mode: {err}"
+        );
         assert!(err.contains("q_proj"), "error should mention layer: {err}");
     }
 
@@ -718,7 +775,10 @@ mod tests {
         let result = sanitize_weights(weights.clone(), &config, true);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("bits"), "error should mention missing field: {err}");
+        assert!(
+            err.contains("bits"),
+            "error should mention missing field: {err}"
+        );
 
         // missing group_size
         let json2 = r#"{
@@ -735,7 +795,10 @@ mod tests {
         let result2 = sanitize_weights(weights, &config2, true);
         assert!(result2.is_err());
         let err2 = result2.unwrap_err().to_string();
-        assert!(err2.contains("group_size"), "error should mention missing field: {err2}");
+        assert!(
+            err2.contains("group_size"),
+            "error should mention missing field: {err2}"
+        );
     }
 
     #[test]
@@ -764,15 +827,27 @@ mod tests {
         let result = sanitize_weights(weights, &config, true);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("string"), "error should mention the invalid type: {err}");
+        assert!(
+            err.contains("string"),
+            "error should mention the invalid type: {err}"
+        );
     }
 
     #[test]
     fn test_vision_sanitize_removes_position_ids() {
         let mut weights = HashMap::new();
-        weights.insert("vision_tower.blocks.0.attn.qkv.weight".to_string(), Array::zeros::<f32>(&[3072, 1024]).unwrap());
-        weights.insert("vision_tower.position_ids".to_string(), Array::zeros::<i32>(&[1, 256]).unwrap());
-        weights.insert("vision_tower.blocks.0.position_ids".to_string(), Array::zeros::<i32>(&[1, 64]).unwrap());
+        weights.insert(
+            "vision_tower.blocks.0.attn.qkv.weight".to_string(),
+            Array::zeros::<f32>(&[3072, 1024]).unwrap(),
+        );
+        weights.insert(
+            "vision_tower.position_ids".to_string(),
+            Array::zeros::<i32>(&[1, 256]).unwrap(),
+        );
+        weights.insert(
+            "vision_tower.blocks.0.position_ids".to_string(),
+            Array::zeros::<i32>(&[1, 64]).unwrap(),
+        );
 
         let result = sanitize_vision_weights(weights, 3).unwrap();
         assert!(result.contains_key("vision_tower.blocks.0.attn.qkv.weight"));
@@ -856,7 +931,10 @@ mod tests {
         save_fixture(
             &dir.path().join("model.safetensors"),
             &[
-                ("a.weight", Array::from_slice(&[1.0f32, 2.0, 3.0, 4.0], &[2, 2])),
+                (
+                    "a.weight",
+                    Array::from_slice(&[1.0f32, 2.0, 3.0, 4.0], &[2, 2]),
+                ),
                 ("b.scales", Array::from_slice(&[5i32, 6], &[2])),
             ],
             Some(&metadata),
@@ -868,11 +946,11 @@ mod tests {
 
         let a = loaded.weights.get("a.weight").unwrap();
         assert_eq!(a.shape(), &[2, 2]);
-        assert_eq!(a.dtype(), mlx_rs::Dtype::Float32);
+        assert_eq!(a.dtype(), mlx::Dtype::Float32);
         assert_eq!(a.as_slice::<f32>(), &[1.0, 2.0, 3.0, 4.0]);
 
         let b = loaded.weights.get("b.scales").unwrap();
-        assert_eq!(b.dtype(), mlx_rs::Dtype::Int32);
+        assert_eq!(b.dtype(), mlx::Dtype::Int32);
         assert_eq!(b.as_slice::<i32>(), &[5, 6]);
     }
 
@@ -908,7 +986,10 @@ mod tests {
         );
 
         let loaded = load_weights(dir.path()).unwrap();
-        assert!(loaded.is_mlx_format, "format=MLX (case-insensitive) should set the flag");
+        assert!(
+            loaded.is_mlx_format,
+            "format=MLX (case-insensitive) should set the flag"
+        );
         assert_eq!(loaded.weights.len(), 2);
         assert!(loaded.weights.contains_key("a.weight"));
         assert!(loaded.weights.contains_key("b.weight"));

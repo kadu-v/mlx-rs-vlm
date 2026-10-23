@@ -1,9 +1,10 @@
-use mlx_rs::builder::Builder;
-use mlx_rs::error::Exception;
-use mlx_rs::macros::ModuleParameters;
-use mlx_rs::module::Module;
-use mlx_rs::nn::{gelu, LayerNorm, Linear};
-use mlx_rs::Array;
+use mlx::Array;
+use mlx::builder::Builder;
+use mlx::error::Exception;
+use mlx::macros::ModuleParameters;
+use mlx::module::Module;
+use mlx::nn::{LayerNorm, Linear, gelu};
+use mlx_rs as mlx;
 
 use crate::config::VisionConfiguration;
 
@@ -14,7 +15,7 @@ use crate::config::VisionConfiguration;
 ///
 /// Pipeline: norm -> reshape/merge -> linear1 -> gelu -> linear2
 #[derive(Debug, Clone, ModuleParameters)]
-#[module(root = mlx_rs)]
+#[module(root = mlx)]
 pub struct PatchMerger {
     #[param]
     pub norm: LayerNorm,
@@ -37,7 +38,10 @@ impl PatchMerger {
     /// - norm: normalizes input features
     /// - linear1: merged_dim -> merged_dim (with bias)
     /// - linear2: merged_dim -> out_hidden_size (with bias)
-    pub fn new(config: &VisionConfiguration, use_post_shuffle_norm: bool) -> Result<Self, Exception> {
+    pub fn new(
+        config: &VisionConfiguration,
+        use_post_shuffle_norm: bool,
+    ) -> Result<Self, Exception> {
         let merge_size = config.spatial_merge_size;
         let merged_dim = config.hidden_size * merge_size * merge_size;
 
@@ -47,9 +51,7 @@ impl PatchMerger {
             config.hidden_size
         };
 
-        let norm = mlx_rs::nn::LayerNormBuilder::new(norm_dim)
-            .eps(1e-6)
-            .build()?;
+        let norm = mlx::nn::LayerNormBuilder::new(norm_dim).eps(1e-6).build()?;
 
         let linear_fc1 = Linear::new(merged_dim, merged_dim)?;
         let linear_fc2 = Linear::new(merged_dim, config.out_hidden_size)?;

@@ -1,6 +1,7 @@
-use mlx_rs::Array;
-use mlx_rs::error::Exception;
-use mlx_rs::ops::indexing::{Ellipsis, IndexOp};
+use mlx::Array;
+use mlx::error::Exception;
+use mlx::ops::indexing::{Ellipsis, IndexOp};
+use mlx_rs as mlx;
 
 #[derive(Debug)]
 pub struct MRoPE {
@@ -9,11 +10,7 @@ pub struct MRoPE {
 }
 
 impl MRoPE {
-    pub fn new(
-        dim: i32,
-        base: f32,
-        mrope_section: [i32; 3],
-    ) -> Result<Self, Exception> {
+    pub fn new(dim: i32, base: f32, mrope_section: [i32; 3]) -> Result<Self, Exception> {
         let half_dim = dim.max(1) / 2;
         let indices = Array::arange::<_, f32>(0, half_dim, None)?;
         let exponents = indices
@@ -33,11 +30,11 @@ impl MRoPE {
     pub fn forward(
         &self,
         position_ids: &Array,
-        target_dtype: mlx_rs::Dtype,
+        target_dtype: mlx::Dtype,
     ) -> Result<(Array, Array), Exception> {
-        let pos = position_ids.as_dtype(mlx_rs::Dtype::Float32)?;
+        let pos = position_ids.as_dtype(mlx::Dtype::Float32)?;
         let merged = self.interleave_axes(&pos)?;
-        let emb = mlx_rs::ops::concatenate_axis(&[&merged, &merged], -1)?;
+        let emb = mlx::ops::concatenate_axis(&[&merged, &merged], -1)?;
         let cos = emb.cos()?.as_dtype(target_dtype)?;
         let sin = emb.sin()?.as_dtype(target_dtype)?;
         Ok((cos, sin))
@@ -93,7 +90,7 @@ fn rotate_half(x: &Array) -> Result<Array, Exception> {
     let x1 = x.index((Ellipsis, ..half));
     let x2 = x.index((Ellipsis, half..));
     let neg_x2 = x2.negative()?;
-    mlx_rs::ops::concatenate_axis(&[&neg_x2, &x1], -1)
+    mlx::ops::concatenate_axis(&[&neg_x2, &x1], -1)
 }
 
 pub fn apply_multimodal_rotary_pos_emb(
@@ -122,14 +119,14 @@ pub fn apply_multimodal_rotary_pos_emb(
 
     let q_out = if rotary_dim < q_dim {
         let q_pass = q.index((Ellipsis, rotary_dim..));
-        mlx_rs::ops::concatenate_axis(&[&q_rotated, &q_pass], -1)?
+        mlx::ops::concatenate_axis(&[&q_rotated, &q_pass], -1)?
     } else {
         q_rotated
     };
 
     let k_out = if rotary_dim < k_dim {
         let k_pass = k.index((Ellipsis, rotary_dim..));
-        mlx_rs::ops::concatenate_axis(&[&k_rotated, &k_pass], -1)?
+        mlx::ops::concatenate_axis(&[&k_rotated, &k_pass], -1)?
     } else {
         k_rotated
     };
@@ -145,7 +142,7 @@ mod tests {
     fn test_mrope_forward_shape() {
         let mrope = MRoPE::new(64, 10000.0, [11, 11, 10]).unwrap();
         let pos_ids = Array::zeros::<i32>(&[3, 1, 8]).unwrap();
-        let (cos, sin) = mrope.forward(&pos_ids, mlx_rs::Dtype::Float32).unwrap();
+        let (cos, sin) = mrope.forward(&pos_ids, mlx::Dtype::Float32).unwrap();
         assert_eq!(cos.shape(), &[1, 8, 64]);
         assert_eq!(sin.shape(), &[1, 8, 64]);
     }
@@ -155,7 +152,7 @@ mod tests {
         let mrope = MRoPE::new(64, 10000.0, [11, 11, 10]).unwrap();
         // All positions zero → all freqs = cos(0)=1
         let pos_ids = Array::zeros::<i32>(&[3, 1, 4]).unwrap();
-        let (cos, _sin) = mrope.forward(&pos_ids, mlx_rs::Dtype::Float32).unwrap();
+        let (cos, _sin) = mrope.forward(&pos_ids, mlx::Dtype::Float32).unwrap();
         cos.eval().unwrap();
         let vals: Vec<f32> = cos.reshape(&[-1]).unwrap().as_slice::<f32>().to_vec();
         for (i, &v) in vals.iter().enumerate() {
@@ -173,10 +170,10 @@ mod tests {
         let mrope = MRoPE::new(64, 10000.0, [11, 11, 10]).unwrap();
         // T=1, H=0, W=0 — only T-axis positions contribute
         let pos_ids = Array::from_slice(&[1i32, 0, 0, 0, 0, 0], &[3, 1, 2]);
-        let (cos_a, _) = mrope.forward(&pos_ids, mlx_rs::Dtype::Float32).unwrap();
+        let (cos_a, _) = mrope.forward(&pos_ids, mlx::Dtype::Float32).unwrap();
         // T=0, H=1, W=0 — only H-axis positions contribute
         let pos_ids2 = Array::from_slice(&[0i32, 0, 1, 0, 0, 0], &[3, 1, 2]);
-        let (cos_b, _) = mrope.forward(&pos_ids2, mlx_rs::Dtype::Float32).unwrap();
+        let (cos_b, _) = mrope.forward(&pos_ids2, mlx::Dtype::Float32).unwrap();
         cos_a.eval().unwrap();
         cos_b.eval().unwrap();
         // They should differ because T and H affect different output indices
@@ -184,6 +181,9 @@ mod tests {
         diff.eval().unwrap();
         let abs_diff = diff.abs().unwrap();
         let max_diff: f32 = abs_diff.max(None).unwrap().item();
-        assert!(max_diff > 1e-3, "T-only and H-only should produce different cos");
+        assert!(
+            max_diff > 1e-3,
+            "T-only and H-only should produce different cos"
+        );
     }
 }

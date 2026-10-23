@@ -1,5 +1,6 @@
-use mlx_rs::Array;
-use mlx_rs::error::Exception;
+use mlx::Array;
+use mlx::error::Exception;
+use mlx_rs as mlx;
 
 pub enum Cache {
     KV(KVCacheSimple),
@@ -46,8 +47,8 @@ impl KVCacheSimple {
 
         let (new_keys, new_values) = match (&self.keys, &self.values) {
             (Some(prev_k), Some(prev_v)) => {
-                let new_k = mlx_rs::ops::concatenate_axis(&[prev_k, keys], 2)?;
-                let new_v = mlx_rs::ops::concatenate_axis(&[prev_v, values], 2)?;
+                let new_k = mlx::ops::concatenate_axis(&[prev_k, keys], 2)?;
+                let new_v = mlx::ops::concatenate_axis(&[prev_v, values], 2)?;
                 (new_k, new_v)
             }
             _ => (keys.clone(), values.clone()),
@@ -107,10 +108,7 @@ pub fn create_causal_mask(n: i32, offset: i32) -> Result<Option<Array>, Exceptio
     }
 
     let total = n + offset;
-    let row_indices = mlx_rs::ops::expand_dims(
-        &Array::arange::<_, i32>(None, n, None)?,
-        1,
-    )?;
+    let row_indices = mlx::ops::expand_dims(&Array::arange::<_, i32>(None, n, None)?, 1)?;
     let col_indices = Array::arange::<_, i32>(None, total, None)?;
 
     let shifted = row_indices.add(&Array::from(offset))?;
@@ -118,7 +116,7 @@ pub fn create_causal_mask(n: i32, offset: i32) -> Result<Option<Array>, Exceptio
 
     let neg_inf = Array::from(f32::NEG_INFINITY);
     let zero = Array::from(0.0f32);
-    let mask = mlx_rs::ops::r#where(&valid, &zero, &neg_inf)?;
+    let mask = mlx::ops::r#where(&valid, &zero, &neg_inf)?;
 
     let mask = mask.reshape(&[1, 1, n, total])?;
     Ok(Some(mask))
