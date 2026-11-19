@@ -1,6 +1,6 @@
 [package]
 name = "mlx-rs-vlm"
-version = "0.6.2"
+version = "0.6.3"
 edition = "2024"
 description = "Qwen 3.5 VLM inference on Apple Silicon using mlx-rs"
 license = "MIT"
