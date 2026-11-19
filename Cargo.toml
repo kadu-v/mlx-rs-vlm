@@ -1,6 +1,6 @@
 [package]
 name = "mlx-rs-vlm"
-version = "0.1.0"
+version = "0.6.2"
 edition = "2024"
 description = "Qwen 3.5 VLM inference on Apple Silicon using mlx-rs"
 license = "MIT"
@@ -12,7 +12,7 @@ hub = ["dep:hf-hub"]
 tokenizer = ["dep:tokenizers", "dep:minijinja", "dep:minijinja-contrib"]
 
 [dependencies]
-mlx-rs = { git = "https://github.com/kadu-v/mlx-rs", tag = "v0.26.0-ios.2" }
+mlx-rs = { git = "https://github.com/kadu-v/mlx-rs", tag = "v0.35.0-ios.1", features = ["metal-jit"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 image = { version = "0.25", default-features = false, features = [
